@@ -37,3 +37,11 @@ def place_order(side):
     print("RESPONSE:", response.text)
 
     return response.text
+app = ApplicationBuilder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CallbackQueryHandler(button))
+
+print("🚀 Bot started...")
+
+app.run_polling()
