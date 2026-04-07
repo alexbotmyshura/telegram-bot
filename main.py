@@ -15,10 +15,7 @@ last_signal_sent = None
 
 
 def get_kraken_ohlc(pair: str = PAIR, interval: int = INTERVAL):
-    params = {
-        "pair": pair,
-        "interval": interval
-    }
+    params = {"pair": pair, "interval": interval}
     r = requests.get(KRAKEN_URL, params=params, timeout=20)
     r.raise_for_status()
     data = r.json()
@@ -27,8 +24,8 @@ def get_kraken_ohlc(pair: str = PAIR, interval: int = INTERVAL):
         raise Exception(f"Kraken error: {data['error']}")
 
     result = data["result"]
-
     pair_key = None
+
     for key in result.keys():
         if key != "last":
             pair_key = key
@@ -150,7 +147,6 @@ def get_signal_data():
     take = None
     rr = None
 
-    # Сильный BUY
     if ema20 > ema50 and current_price > ema20 and 55 <= rsi14 <= 65:
         signal = "BUY"
         reason = "Сильный BUY: EMA20 выше EMA50, цена выше EMA20, RSI в сильной зоне роста"
@@ -158,7 +154,6 @@ def get_signal_data():
         take = current_price + (atr14 * 2)
         rr = "1:2"
 
-    # Сильный SELL
     elif ema20 < ema50 and current_price < ema20 and 35 <= rsi14 <= 45:
         signal = "SELL"
         reason = "Сильный SELL: EMA20 ниже EMA50, цена ниже EMA20, RSI в слабой зоне"
@@ -247,14 +242,14 @@ async def auto_signal_loop(app):
                 if data:
                     signal = data["signal"]
 
-                    if signal in ["BUY", "SELL"]:
-                        if signal != last_signal_sent:
-                            await app.bot.send_message(
-                                chat_id=chat_id,
-                                text=f"🔔 Авто-сигнал\n\n{data['message']}"
-                            )
-                            last_signal_sent = signal
-                    else:
+                    if signal in ["BUY", "SELL"] and signal != last_signal_sent:
+                        await app.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"🔔 Авто-сигнал\n\n{data['message']}"
+                        )
+                        last_signal_sent = signal
+
+                    if signal == "NO TRADE":
                         last_signal_sent = None
 
         except Exception as e:
@@ -265,7 +260,7 @@ async def auto_signal_loop(app):
 
 async def on_startup(app):
     asyncio.create_task(auto_signal_loop(app))
-    print("🚀 Strong signal bot started...")
+    print("🚀 Auto signal bot started...")
 
 
 app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
