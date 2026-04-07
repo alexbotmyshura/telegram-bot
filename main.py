@@ -102,16 +102,18 @@ def get_signal_data():
 
     if ema20 is None or ema50 is None or rsi14 is None:
         return None
+if ema20 > ema50 and current_price > ema20 and 55 <= rsi14 <= 65:
+    signal = "BUY"
+    reason = "Сильный BUY: EMA20 выше EMA50, цена выше EMA20, RSI в сильной зоне роста"
 
-    if ema20 > ema50 and 50 <= rsi14 <= 68:
-        signal = "BUY"
-        reason = "EMA20 выше EMA50, RSI в зоне роста"
-    elif ema20 < ema50 and 32 <= rsi14 <= 50:
-        signal = "SELL"
-        reason = "EMA20 ниже EMA50, RSI слабый"
-    else:
-        signal = "NO TRADE"
-        reason = "Нет чистого сигнала"
+elif ema20 < ema50 and current_price < ema20 and 35 <= rsi14 <= 45:
+    signal = "SELL"
+    reason = "Сильный SELL: EMA20 ниже EMA50, цена ниже EMA20, RSI в слабой зоне"
+
+else:
+    signal = "NO TRADE"
+    reason = "Сильного сигнала нет"
+    
 
     message = (
         f"BTCUSDT\n"
