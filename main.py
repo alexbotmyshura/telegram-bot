@@ -2,12 +2,16 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import os
 import requests
+import asyncio
 
 TOKEN = os.getenv("BOT_TOKEN")
 
 KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
 PAIR = "XBTUSDT"
 INTERVAL = 15
+CHECK_EVERY_SECONDS = 900  # 15 минут
+
+last_signal_sent = None
 
 
 def get_kraken_ohlc(pair: str = PAIR, interval: int = INTERVAL):
@@ -87,7 +91,7 @@ def rsi(values, period: int = 14):
     return 100 - (100 / (1 + rs))
 
 
-def build_signal():
+def get_signal_data():
     ohlc = get_kraken_ohlc()
     closes = closes_from_ohlc(ohlc)
 
@@ -97,7 +101,7 @@ def build_signal():
     rsi14 = rsi(closes, 14)
 
     if ema20 is None or ema50 is None or rsi14 is None:
-        return "Недостаточно данных"
+        return None
 
     if ema20 > ema50 and 50 <= rsi14 <= 68:
         signal = "BUY"
@@ -109,7 +113,7 @@ def build_signal():
         signal = "NO TRADE"
         reason = "Нет чистого сигнала"
 
-    return (
+    message = (
         f"BTCUSDT\n"
         f"Таймфрейм: 15m\n"
         f"Сигнал: {signal}\n"
@@ -120,26 +124,88 @@ def build_signal():
         f"Причина: {reason}"
     )
 
+    return {
+        "signal": signal,
+        "message": message
+    }
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Бот сигналов готов.\n"
         "Команды:\n"
-        "/check — проверить сигнал по BTCUSDT"
+        "/check — проверить сигнал\n"
+        "/id — показать твой chat_id\n"
+        "/setchat — сохранить этот чат для авто-сигналов"
     )
 
 
 async def check_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        message = build_signal()
-        await update.message.reply_text(message)
+        data = get_signal_data()
+        if not data:
+            await update.message.reply_text("Недостаточно данных")
+            return
+
+        await update.message.reply_text(data["message"])
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {str(e)}")
 
 
-app = ApplicationBuilder().token(TOKEN).build()
+async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Твой chat_id: {update.effective_chat.id}")
+
+
+async def set_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    with open("chat_id.txt", "w") as f:
+        f.write(chat_id)
+
+    await update.message.reply_text(f"Чат сохранён для авто-сигналов: {chat_id}")
+
+
+def load_chat_id():
+    try:
+        with open("chat_id.txt", "r") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return None
+
+
+async def auto_signal_loop(app):
+    global last_signal_sent
+
+    while True:
+        try:
+            chat_id = load_chat_id()
+            if chat_id:
+                data = get_signal_data()
+                if data:
+                    signal = data["signal"]
+
+                    if signal in ["BUY", "SELL"]:
+                        if signal != last_signal_sent:
+                            await app.bot.send_message(chat_id=chat_id, text=f"🔔 Авто-сигнал\n\n{data['message']}")
+                            last_signal_sent = signal
+                    else:
+                        last_signal_sent = None
+
+        except Exception as e:
+            print("AUTO SIGNAL ERROR:", str(e))
+
+        await asyncio.sleep(CHECK_EVERY_SECONDS)
+
+
+async def on_startup(app):
+    asyncio.create_task(auto_signal_loop(app))
+    print("🚀 Auto signal bot started...")
+
+
+app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
+
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("check", check_signal))
+app.add_handler(CommandHandler("id", get_chat_id))
+app.add_handler(CommandHandler("setchat", set_chat))
 
-print("Signal bot started...")
 app.run_polling()
