@@ -5,26 +5,39 @@ import requests
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-BINANCE_URL = "https://api.binance.com/api/v3/klines"
-SYMBOL = "BTCUSDT"
-INTERVAL = "15m"
-LIMIT = 120
+KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
+PAIR = "XBTUSDT"
+INTERVAL = 15
 
 
-def get_klines(symbol: str = SYMBOL, interval: str = INTERVAL, limit: int = LIMIT):
+def get_kraken_ohlc(pair: str = PAIR, interval: int = INTERVAL):
     params = {
-        "symbol": symbol,
-        "interval": interval,
-        "limit": limit,
+        "pair": pair,
+        "interval": interval
     }
-    r = requests.get(BINANCE_URL, params=params, timeout=20)
+    r = requests.get(KRAKEN_URL, params=params, timeout=20)
     r.raise_for_status()
     data = r.json()
-    return data
+
+    if data.get("error"):
+        raise Exception(f"Kraken error: {data['error']}")
+
+    result = data["result"]
+
+    pair_key = None
+    for key in result.keys():
+        if key != "last":
+            pair_key = key
+            break
+
+    if not pair_key:
+        raise Exception("Не удалось получить свечи Kraken")
+
+    return result[pair_key]
 
 
-def closes_from_klines(klines):
-    return [float(k[4]) for k in klines]
+def closes_from_ohlc(ohlc):
+    return [float(candle[4]) for candle in ohlc]
 
 
 def ema(values, period: int):
@@ -75,8 +88,8 @@ def rsi(values, period: int = 14):
 
 
 def build_signal():
-    klines = get_klines()
-    closes = closes_from_klines(klines)
+    ohlc = get_kraken_ohlc()
+    closes = closes_from_ohlc(ohlc)
 
     current_price = closes[-1]
     ema20 = ema(closes, 20)
@@ -86,10 +99,9 @@ def build_signal():
     if ema20 is None or ema50 is None or rsi14 is None:
         return "Недостаточно данных"
 
-    # Простая осторожная логика
     if ema20 > ema50 and 50 <= rsi14 <= 68:
         signal = "BUY"
-        reason = "EMA20 выше EMA50, RSI в нормальной зоне роста"
+        reason = "EMA20 выше EMA50, RSI в зоне роста"
     elif ema20 < ema50 and 32 <= rsi14 <= 50:
         signal = "SELL"
         reason = "EMA20 ниже EMA50, RSI слабый"
@@ -126,10 +138,8 @@ async def check_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 app = ApplicationBuilder().token(TOKEN).build()
-
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("check", check_signal))
 
 print("Signal bot started...")
-
 app.run_polling()
