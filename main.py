@@ -1,82 +1,135 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import os
-import time
-import hmac
-import hashlib
 import requests
-import json
 
-API_KEY = os.getenv("BYBIT_API_KEY")
-API_SECRET = os.getenv("BYBIT_API_SECRET")
 TOKEN = os.getenv("BOT_TOKEN")
 
+BINANCE_URL = "https://api.binance.com/api/v3/klines"
+SYMBOL = "BTCUSDT"
+INTERVAL = "15m"
+LIMIT = 120
 
-def place_order(side):
-    url = "https://api.bytick.com/v5/order/create"
-    recv_window = "5000"
-    timestamp = str(int(time.time() * 1000))
 
-    body = {
-        "category": "spot",
-        "symbol": "BTCUSDT",
-        "side": side,
-        "orderType": "Market",
-        "qty": "10",
-        "marketUnit": "quoteCoin"
+def get_klines(symbol: str = SYMBOL, interval: str = INTERVAL, limit: int = LIMIT):
+    params = {
+        "symbol": symbol,
+        "interval": interval,
+        "limit": limit,
     }
+    r = requests.get(BINANCE_URL, params=params, timeout=20)
+    r.raise_for_status()
+    data = r.json()
+    return data
 
-    body_str = json.dumps(body, separators=(",", ":"))
-    param_str = timestamp + API_KEY + recv_window + body_str
 
-    signature = hmac.new(
-        bytes(API_SECRET, "utf-8"),
-        param_str.encode("utf-8"),
-        hashlib.sha256
-    ).hexdigest()
+def closes_from_klines(klines):
+    return [float(k[4]) for k in klines]
 
-    headers = {
-        "X-BAPI-API-KEY": API_KEY,
-        "X-BAPI-SIGN": signature,
-        "X-BAPI-TIMESTAMP": timestamp,
-        "X-BAPI-RECV-WINDOW": recv_window,
-        "Content-Type": "application/json"
-    }
 
-    response = requests.post(url, headers=headers, data=body_str, timeout=20)
+def ema(values, period: int):
+    if len(values) < period:
+        return None
 
-    print("STATUS:", response.status_code)
-    print("RESPONSE:", response.text)
+    multiplier = 2 / (period + 1)
+    ema_value = sum(values[:period]) / period
 
-    return response.text
+    for price in values[period:]:
+        ema_value = (price - ema_value) * multiplier + ema_value
+
+    return ema_value
+
+
+def rsi(values, period: int = 14):
+    if len(values) < period + 1:
+        return None
+
+    gains = []
+    losses = []
+
+    for i in range(1, period + 1):
+        delta = values[i] - values[i - 1]
+        if delta >= 0:
+            gains.append(delta)
+            losses.append(0)
+        else:
+            gains.append(0)
+            losses.append(abs(delta))
+
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+
+    for i in range(period + 1, len(values)):
+        delta = values[i] - values[i - 1]
+        gain = max(delta, 0)
+        loss = max(-delta, 0)
+
+        avg_gain = ((avg_gain * (period - 1)) + gain) / period
+        avg_loss = ((avg_loss * (period - 1)) + loss) / period
+
+    if avg_loss == 0:
+        return 100.0
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def build_signal():
+    klines = get_klines()
+    closes = closes_from_klines(klines)
+
+    current_price = closes[-1]
+    ema20 = ema(closes, 20)
+    ema50 = ema(closes, 50)
+    rsi14 = rsi(closes, 14)
+
+    if ema20 is None or ema50 is None or rsi14 is None:
+        return "Недостаточно данных"
+
+    # Простая осторожная логика
+    if ema20 > ema50 and 50 <= rsi14 <= 68:
+        signal = "BUY"
+        reason = "EMA20 выше EMA50, RSI в нормальной зоне роста"
+    elif ema20 < ema50 and 32 <= rsi14 <= 50:
+        signal = "SELL"
+        reason = "EMA20 ниже EMA50, RSI слабый"
+    else:
+        signal = "NO TRADE"
+        reason = "Нет чистого сигнала"
+
+    return (
+        f"BTCUSDT\n"
+        f"Таймфрейм: 15m\n"
+        f"Сигнал: {signal}\n"
+        f"Цена: {current_price:.2f}\n"
+        f"EMA20: {ema20:.2f}\n"
+        f"EMA50: {ema50:.2f}\n"
+        f"RSI14: {rsi14:.2f}\n"
+        f"Причина: {reason}"
+    )
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("💰 BUY", callback_data="buy")],
-        [InlineKeyboardButton("📉 SELL", callback_data="sell")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("Выбери действие:", reply_markup=reply_markup)
+    await update.message.reply_text(
+        "Бот сигналов готов.\n"
+        "Команды:\n"
+        "/check — проверить сигнал по BTCUSDT"
+    )
 
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "buy":
-        result = place_order("Buy")
-        await query.edit_message_text(f"💰 Результат:\n{result[:300]}")
-    elif query.data == "sell":
-        result = place_order("Sell")
-        await query.edit_message_text(f"📉 Результат:\n{result[:300]}")
+async def check_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        message = build_signal()
+        await update.message.reply_text(message)
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {str(e)}")
 
 
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(button))
+app.add_handler(CommandHandler("check", check_signal))
 
-print("🚀 Bot started...")
+print("Signal bot started...")
 
 app.run_polling()
