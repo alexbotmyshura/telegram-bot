@@ -13,7 +13,7 @@ TOKEN = os.getenv("BOT_TOKEN")
 
 
 def place_order(side):
-    url = "https://api.bybit.com/v5/order/create"
+    url = "https://api.bytick.com/v5/order/create"
     recv_window = "5000"
     timestamp = str(int(time.time() * 1000))
 
