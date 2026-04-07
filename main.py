@@ -18,11 +18,11 @@ def place_order(side):
     timestamp = str(int(time.time() * 1000))
 
     body = {
-        "category": "linear",
+        "category": "spot",
         "symbol": "BTCUSDT",
         "side": side,
         "orderType": "Market",
-        "qty": "0.001"
+        "quoteOrderQty": "10"
     }
 
     body_str = json.dumps(body, separators=(",", ":"))
