@@ -72,43 +72,35 @@ def check_signal():
     signal = None
     reason = ""
 
-    # 🟢 СИЛЬНЫЙ BUY
-    if (
-        ema50 > ema200 and      # тренд вверх
-        ema20 > ema50 and       # импульс вверх
-        price > ema20 and       # цена держится выше
-        rsi14 > 55              # сила
-    ):
-        signal = "BUY"
-        reason = "Сильный восходящий тренд + импульс"
+    # 🟢 LONG (BUY)
+    if ema50 > ema200 and ema20 > ema50 and price > ema20 and rsi14 > 55:
+        signal = "LONG"
+        reason = "Тренд вверх + импульс"
 
-    # 🔴 СИЛЬНЫЙ SELL
-    elif (
-        ema50 < ema200 and      # тренд вниз
-        ema20 < ema50 and       # импульс вниз
-        price < ema20 and       # цена ниже
-        rsi14 < 45              # слабость
-    ):
-        signal = "SELL"
-        reason = "Сильный нисходящий тренд + импульс"
+    # 🔴 SHORT (SELL)
+    elif ema50 < ema200 and ema20 < ema50 and price < ema20 and rsi14 < 45:
+        signal = "SHORT"
+        reason = "Тренд вниз + импульс"
 
     if signal and signal != last_signal:
         last_signal = signal
 
-        stop = price * (0.997 if signal == "BUY" else 1.003)
-        take = price * (1.025 if signal == "BUY" else 0.975)
+        # 🎯 настройки под фьючи
+        stop = price * (0.995 if signal == "LONG" else 1.005)
+        take = price * (1.03 if signal == "LONG" else 0.97)
 
         message = f"""
-🔥 СИЛЬНЫЙ СИГНАЛ
+🚀 ФЬЮЧЕРС СИГНАЛ
 
 SOLUSD
 Таймфрейм: 15m
-Сигнал: {signal}
-Цена: {round(price,2)}
+Тип: {signal}
+
 Вход: {round(price,2)}
 Стоп: {round(stop,2)}
 Тейк: {round(take,2)}
-RR: 1:2+
+
+RR: ~1:3
 
 EMA20: {round(ema20,2)}
 EMA50: {round(ema50,2)}
@@ -120,7 +112,7 @@ RSI14: {round(rsi14,2)}
         send_telegram(message)
 
 
-print("🔥 Бот с сильными сигналами запущен")
+print("🚀 Фьючерс бот запущен")
 
 while True:
     try:
