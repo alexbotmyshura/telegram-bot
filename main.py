@@ -1,54 +1,52 @@
-import requests
+import os
 import time
-from binance.client import Client
+import requests
 
-# 🔑 ВСТАВЬ СВОИ ДАННЫЕ
-TELEGRAM_TOKEN = "ТВОЙ_ТОКЕН"
-CHAT_ID = "ТВОЙ_CHAT_ID"
+TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
-client = Client()
-
-SYMBOL = "SOLUSDT"
-TIMEFRAME = Client.KLINE_INTERVAL_15MINUTE
+KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
+PAIR = "SOLUSD"
+INTERVAL = 15
 
 last_signal = None
 
 
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     data = {"chat_id": CHAT_ID, "text": message}
     requests.post(url, data=data)
 
 
 def get_data():
-    klines = client.get_klines(symbol=SYMBOL, interval=TIMEFRAME, limit=100)
-    closes = [float(k[4]) for k in klines]
+    params = {"pair": PAIR, "interval": INTERVAL}
+    r = requests.get(KRAKEN_URL, params=params)
+    data = r.json()
+
+    pair_key = list(data["result"].keys())[0]
+    candles = data["result"][pair_key]
+
+    closes = [float(c[4]) for c in candles]
     return closes
 
 
 def ema(data, period):
-    ema_values = []
     k = 2 / (period + 1)
-    for i in range(len(data)):
-        if i < period:
-            ema_values.append(sum(data[:period]) / period)
-        else:
-            ema_values.append(data[i] * k + ema_values[-1] * (1 - k))
-    return ema_values
+    ema_val = sum(data[:period]) / period
+
+    for price in data[period:]:
+        ema_val = price * k + ema_val * (1 - k)
+
+    return ema_val
 
 
 def rsi(data, period=14):
-    gains = []
-    losses = []
+    gains, losses = [], []
 
     for i in range(1, len(data)):
-        change = data[i] - data[i - 1]
-        if change > 0:
-            gains.append(change)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(change))
+        diff = data[i] - data[i - 1]
+        gains.append(max(diff, 0))
+        losses.append(abs(min(diff, 0)))
 
     avg_gain = sum(gains[:period]) / period
     avg_loss = sum(losses[:period]) / period
@@ -64,56 +62,39 @@ def check_signal():
     global last_signal
 
     closes = get_data()
-
-    ema20 = ema(closes, 20)[-1]
-    ema50 = ema(closes, 50)[-1]
-    rsi_value = rsi(closes)
     price = closes[-1]
 
+    ema20 = ema(closes, 20)
+    ema50 = ema(closes, 50)
+    rsi14 = rsi(closes)
+
     signal = None
-    reason = ""
 
-    # 🔴 SELL
-    if ema20 < ema50 and price < ema20 and rsi_value < 45:
-        signal = "SELL"
-        reason = "EMA20 ниже EMA50, цена ниже EMA20, RSI слабый"
-
-    # 🟢 BUY
-    elif ema20 > ema50 and price > ema20 and rsi_value > 55:
+    if ema20 > ema50 and price > ema20 and rsi14 > 55:
         signal = "BUY"
-        reason = "EMA20 выше EMA50, цена выше EMA20, RSI сильный"
+    elif ema20 < ema50 and price < ema20 and rsi14 < 45:
+        signal = "SELL"
 
-    # ❗ чтобы не спамил одинаковыми сигналами
     if signal and signal != last_signal:
         last_signal = signal
 
-        stop = price * (1.002 if signal == "SELL" else 0.998)
-        take = price * (0.98 if signal == "SELL" else 1.02)
-
         message = f"""
-🔔 SOLUSDT Сигнал
+🔔 SOLUSD Сигнал
 
-Таймфрейм: 15m
 Сигнал: {signal}
-Цена: {round(price, 2)}
-Вход: {round(price, 2)}
-Стоп: {round(stop, 2)}
-Тейк: {round(take, 2)}
-RR: 1:2
-
-EMA20: {round(ema20, 2)}
-EMA50: {round(ema50, 2)}
-RSI14: {round(rsi_value, 2)}
-
-Причина: {reason}
+Цена: {round(price,2)}
+EMA20: {round(ema20,2)}
+EMA50: {round(ema50,2)}
+RSI: {round(rsi14,2)}
 """
         send_telegram(message)
 
 
 while True:
     try:
+        send_telegram("✅ Бот запущен")  # проверка
         check_signal()
         time.sleep(60)
     except Exception as e:
-        print("Ошибка:", e)
+        print(e)
         time.sleep(60)
