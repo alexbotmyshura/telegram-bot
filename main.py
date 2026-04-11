@@ -1,273 +1,119 @@
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import os
 import requests
-import asyncio
+import time
+from binance.client import Client
 
-TOKEN = os.getenv("BOT_TOKEN")
+# 🔑 ВСТАВЬ СВОИ ДАННЫЕ
+TELEGRAM_TOKEN = "ТВОЙ_ТОКЕН"
+CHAT_ID = "ТВОЙ_CHAT_ID"
 
-KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
-PAIR = "XBTUSDT"
-INTERVAL = 15
-CHECK_EVERY_SECONDS = 60
+client = Client()
 
-last_signal_sent = None
+SYMBOL = "SOLUSDT"
+TIMEFRAME = Client.KLINE_INTERVAL_15MINUTE
 
-
-def get_kraken_ohlc(pair: str = PAIR, interval: int = INTERVAL):
-    params = {"pair": pair, "interval": interval}
-    r = requests.get(KRAKEN_URL, params=params, timeout=20)
-    r.raise_for_status()
-    data = r.json()
-
-    if data.get("error"):
-        raise Exception(f"Kraken error: {data['error']}")
-
-    result = data["result"]
-    pair_key = None
-
-    for key in result.keys():
-        if key != "last":
-            pair_key = key
-            break
-
-    if not pair_key:
-        raise Exception("Не удалось получить свечи Kraken")
-
-    return result[pair_key]
+last_signal = None
 
 
-def closes_from_ohlc(ohlc):
-    return [float(candle[4]) for candle in ohlc]
+def send_telegram(message):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {"chat_id": CHAT_ID, "text": message}
+    requests.post(url, data=data)
 
 
-def highs_from_ohlc(ohlc):
-    return [float(candle[2]) for candle in ohlc]
+def get_data():
+    klines = client.get_klines(symbol=SYMBOL, interval=TIMEFRAME, limit=100)
+    closes = [float(k[4]) for k in klines]
+    return closes
 
 
-def lows_from_ohlc(ohlc):
-    return [float(candle[3]) for candle in ohlc]
+def ema(data, period):
+    ema_values = []
+    k = 2 / (period + 1)
+    for i in range(len(data)):
+        if i < period:
+            ema_values.append(sum(data[:period]) / period)
+        else:
+            ema_values.append(data[i] * k + ema_values[-1] * (1 - k))
+    return ema_values
 
 
-def ema(values, period: int):
-    if len(values) < period:
-        return None
-
-    multiplier = 2 / (period + 1)
-    ema_value = sum(values[:period]) / period
-
-    for price in values[period:]:
-        ema_value = (price - ema_value) * multiplier + ema_value
-
-    return ema_value
-
-
-def rsi(values, period: int = 14):
-    if len(values) < period + 1:
-        return None
-
+def rsi(data, period=14):
     gains = []
     losses = []
 
-    for i in range(1, period + 1):
-        delta = values[i] - values[i - 1]
-        if delta >= 0:
-            gains.append(delta)
+    for i in range(1, len(data)):
+        change = data[i] - data[i - 1]
+        if change > 0:
+            gains.append(change)
             losses.append(0)
         else:
             gains.append(0)
-            losses.append(abs(delta))
+            losses.append(abs(change))
 
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-
-    for i in range(period + 1, len(values)):
-        delta = values[i] - values[i - 1]
-        gain = max(delta, 0)
-        loss = max(-delta, 0)
-
-        avg_gain = ((avg_gain * (period - 1)) + gain) / period
-        avg_loss = ((avg_loss * (period - 1)) + loss) / period
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
 
     if avg_loss == 0:
-        return 100.0
+        return 100
 
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 
-def atr(highs, lows, closes, period=14):
-    if len(closes) < period + 1:
-        return None
+def check_signal():
+    global last_signal
 
-    true_ranges = []
+    closes = get_data()
 
-    for i in range(1, len(closes)):
-        high = highs[i]
-        low = lows[i]
-        prev_close = closes[i - 1]
+    ema20 = ema(closes, 20)[-1]
+    ema50 = ema(closes, 50)[-1]
+    rsi_value = rsi(closes)
+    price = closes[-1]
 
-        tr = max(
-            high - low,
-            abs(high - prev_close),
-            abs(low - prev_close)
-        )
-        true_ranges.append(tr)
+    signal = None
+    reason = ""
 
-    if len(true_ranges) < period:
-        return None
-
-    atr_value = sum(true_ranges[:period]) / period
-
-    for tr in true_ranges[period:]:
-        atr_value = ((atr_value * (period - 1)) + tr) / period
-
-    return atr_value
-
-
-def get_signal_data():
-    ohlc = get_kraken_ohlc()
-    closes = closes_from_ohlc(ohlc)
-    highs = highs_from_ohlc(ohlc)
-    lows = lows_from_ohlc(ohlc)
-
-    current_price = closes[-1]
-    ema20 = ema(closes, 20)
-    ema50 = ema(closes, 50)
-    rsi14 = rsi(closes, 14)
-    atr14 = atr(highs, lows, closes, 14)
-
-    if ema20 is None or ema50 is None or rsi14 is None or atr14 is None:
-        return None
-
-    signal = "NO TRADE"
-    reason = "Сильного сигнала нет"
-    entry = current_price
-    stop = None
-    take = None
-    rr = None
-
-    if ema20 > ema50 and current_price > ema20 and 55 <= rsi14 <= 65:
-        signal = "BUY"
-        reason = "Сильный BUY: EMA20 выше EMA50, цена выше EMA20, RSI в сильной зоне роста"
-        stop = current_price - atr14
-        take = current_price + (atr14 * 2)
-        rr = "1:2"
-
-    elif ema20 < ema50 and current_price < ema20 and 35 <= rsi14 <= 45:
+    # 🔴 SELL
+    if ema20 < ema50 and price < ema20 and rsi_value < 45:
         signal = "SELL"
-        reason = "Сильный SELL: EMA20 ниже EMA50, цена ниже EMA20, RSI в слабой зоне"
-        stop = current_price + atr14
-        take = current_price - (atr14 * 2)
-        rr = "1:2"
+        reason = "EMA20 ниже EMA50, цена ниже EMA20, RSI слабый"
 
-    message = (
-        f"BTCUSDT\n"
-        f"Таймфрейм: 15m\n"
-        f"Сигнал: {signal}\n"
-        f"Цена: {current_price:.2f}\n"
-    )
+    # 🟢 BUY
+    elif ema20 > ema50 and price > ema20 and rsi_value > 55:
+        signal = "BUY"
+        reason = "EMA20 выше EMA50, цена выше EMA20, RSI сильный"
 
-    if signal in ["BUY", "SELL"]:
-        message += (
-            f"Вход: {entry:.2f}\n"
-            f"Стоп: {stop:.2f}\n"
-            f"Тейк: {take:.2f}\n"
-            f"RR: {rr}\n"
-        )
+    # ❗ чтобы не спамил одинаковыми сигналами
+    if signal and signal != last_signal:
+        last_signal = signal
 
-    message += (
-        f"EMA20: {ema20:.2f}\n"
-        f"EMA50: {ema50:.2f}\n"
-        f"RSI14: {rsi14:.2f}\n"
-        f"Причина: {reason}"
-    )
+        stop = price * (1.002 if signal == "SELL" else 0.998)
+        take = price * (0.98 if signal == "SELL" else 1.02)
 
-    return {
-        "signal": signal,
-        "message": message
-    }
+        message = f"""
+🔔 SOLUSDT Сигнал
 
+Таймфрейм: 15m
+Сигнал: {signal}
+Цена: {round(price, 2)}
+Вход: {round(price, 2)}
+Стоп: {round(stop, 2)}
+Тейк: {round(take, 2)}
+RR: 1:2
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Бот сильных сигналов готов.\n"
-        "Команды:\n"
-        "/check — проверить сигнал\n"
-        "/id — показать твой chat_id\n"
-        "/setchat — сохранить этот чат для авто-сигналов"
-    )
+EMA20: {round(ema20, 2)}
+EMA50: {round(ema50, 2)}
+RSI14: {round(rsi_value, 2)}
+
+Причина: {reason}
+"""
+        send_telegram(message)
 
 
-async def check_signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+while True:
     try:
-        data = get_signal_data()
-        if not data:
-            await update.message.reply_text("Недостаточно данных")
-            return
-
-        await update.message.reply_text(data["message"])
+        check_signal()
+        time.sleep(60)
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {str(e)}")
-
-
-async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Твой chat_id: {update.effective_chat.id}")
-
-
-async def set_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = str(update.effective_chat.id)
-    with open("chat_id.txt", "w") as f:
-        f.write(chat_id)
-
-    await update.message.reply_text(f"Чат сохранён для авто-сигналов: {chat_id}")
-
-
-def load_chat_id():
-    try:
-        with open("chat_id.txt", "r") as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        return None
-
-
-async def auto_signal_loop(app):
-    global last_signal_sent
-
-    while True:
-        try:
-            chat_id = load_chat_id()
-            if chat_id:
-                data = get_signal_data()
-                if data:
-                    signal = data["signal"]
-
-                    if signal in ["BUY", "SELL"] and signal != last_signal_sent:
-                        await app.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"🔔 Авто-сигнал\n\n{data['message']}"
-                        )
-                        last_signal_sent = signal
-
-                    if signal == "NO TRADE":
-                        last_signal_sent = None
-
-        except Exception as e:
-            print("AUTO SIGNAL ERROR:", str(e))
-
-        await asyncio.sleep(CHECK_EVERY_SECONDS)
-
-
-async def on_startup(app):
-    asyncio.create_task(auto_signal_loop(app))
-    print("🚀 Auto signal bot started...")
-
-
-app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
-
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("check", check_signal))
-app.add_handler(CommandHandler("id", get_chat_id))
-app.add_handler(CommandHandler("setchat", set_chat))
-
-app.run_polling()
+        print("Ошибка:", e)
+        time.sleep(60)
