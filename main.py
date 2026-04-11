@@ -69,32 +69,51 @@ def check_signal():
     rsi14 = rsi(closes)
 
     signal = None
+    reason = ""
 
+    # 🟢 BUY
     if ema20 > ema50 and price > ema20 and rsi14 > 55:
         signal = "BUY"
+        reason = "EMA20 выше EMA50, цена выше EMA20, RSI сильный"
+
+    # 🔴 SELL
     elif ema20 < ema50 and price < ema20 and rsi14 < 45:
         signal = "SELL"
+        reason = "EMA20 ниже EMA50, цена ниже EMA20, RSI слабый"
 
     if signal and signal != last_signal:
         last_signal = signal
 
-        message = f"""
-🔔 SOLUSD Сигнал
+        stop = price * (0.998 if signal == "BUY" else 1.002)
+        take = price * (1.02 if signal == "BUY" else 0.98)
 
+        message = f"""
+🔔 Авто-сигнал
+
+SOLUSD
+Таймфрейм: 15m
 Сигнал: {signal}
 Цена: {round(price,2)}
+Вход: {round(price,2)}
+Стоп: {round(stop,2)}
+Тейк: {round(take,2)}
+RR: 1:2
+
 EMA20: {round(ema20,2)}
 EMA50: {round(ema50,2)}
-RSI: {round(rsi14,2)}
+RSI14: {round(rsi14,2)}
+
+Причина: {reason}
 """
         send_telegram(message)
 
 
+print("Бот запущен...")
+
 while True:
     try:
-        send_telegram("✅ Бот запущен")  # проверка
         check_signal()
         time.sleep(60)
     except Exception as e:
-        print(e)
+        print("Ошибка:", e)
         time.sleep(60)
