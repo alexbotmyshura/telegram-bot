@@ -7,58 +7,51 @@ BOT_TOKEN = "ТВОЙ_BOT_TOKEN"
 CHAT_ID = "ТВОЙ_CHAT_ID"
 
 SYMBOL = "SOLUSDT"
-INTERVALS = ["5m", "15m"]
+INTERVALS = ["5", "15"]  # Bybit формат
 
 last_signal_time = {}
 
-# 📊 Получение данных (УЛУЧШЕННОЕ)
+# 📊 Bybit данные
 def get_data(symbol, interval):
-    urls = [
-        f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100",
-        f"https://api1.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100",
-        f"https://api2.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
-    ]
+    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit=100"
 
-    for url in urls:
-        try:
-            response = requests.get(url, timeout=10)
-            data = response.json()
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
 
-            # ✅ если есть нормальные данные
-            if isinstance(data, list) and len(data) > 0:
+        if "result" not in data or "list" not in data["result"]:
+            print("Нет данных от Bybit")
+            return None
 
-                df = pd.DataFrame(data, columns=[
-                    "time","open","high","low","close","volume",
-                    "close_time","qav","trades","tbbav","tbqav","ignore"
-                ])
+        klines = data["result"]["list"]
 
-                df['close'] = df['close'].astype(float)
+        df = pd.DataFrame(klines, columns=[
+            "time","open","high","low","close","volume","turnover"
+        ])
 
-                # EMA
-                df['ema20'] = df['close'].ewm(span=20).mean()
-                df['ema50'] = df['close'].ewm(span=50).mean()
+        df['close'] = df['close'].astype(float)
+        df = df[::-1]
 
-                # RSI
-                delta = df['close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        # EMA
+        df['ema20'] = df['close'].ewm(span=20).mean()
+        df['ema50'] = df['close'].ewm(span=50).mean()
 
-                rs = gain / loss
-                df['rsi'] = 100 - (100 / (1 + rs))
+        # RSI
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
 
-                if df.empty:
-                    continue
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
 
-                return df.iloc[-1]
+        return df.iloc[-1]
 
-        except Exception as e:
-            print("Ошибка Binance:", e)
-
-    print("Нет данных от Binance (все сервера)")
-    return None
+    except Exception as e:
+        print("Ошибка Bybit:", e)
+        return None
 
 
-# 🚫 Анти-дубли (раз в 30 мин)
+# 🚫 Анти-дубли
 def can_send(symbol, tf):
     now = time.time()
     key = f"{symbol}_{tf}"
@@ -81,49 +74,61 @@ def send_telegram(text):
         print("Ошибка Telegram:", e)
 
 
-# 🧠 Логика сигналов
+# 🧠 УМНЫЙ ВХОД (ОТКАТ К EMA)
 def check_signal(data):
     close = data['close']
     ema20 = data['ema20']
     ema50 = data['ema50']
     rsi = data['rsi']
 
-    # 🔼 LONG
-    if ema20 > ema50 and 50 < rsi < 70:
+    distance = abs(close - ema20) / ema20
+
+    # 🔼 LONG (после отката)
+    if (
+        ema20 > ema50 and
+        45 < rsi < 65 and
+        close <= ema20 * 1.002 and
+        distance < 0.003
+    ):
         return {
             "type": "LONG",
             "entry": round(close, 2),
             "stop": round(close * 0.995, 2),
-            "take": round(close * 1.015, 2),
+            "take": round(close * 1.02, 2),
             "ema20": round(ema20, 2),
             "ema50": round(ema50, 2),
             "rsi": round(rsi, 2),
-            "reason": "Тренд вверх + импульс"
+            "reason": "Откат к EMA20 + тренд вверх"
         }
 
-    # 🔽 SHORT
-    if ema20 < ema50 and 30 < rsi < 50:
+    # 🔽 SHORT (после отката)
+    if (
+        ema20 < ema50 and
+        35 < rsi < 55 and
+        close >= ema20 * 0.998 and
+        distance < 0.003
+    ):
         return {
             "type": "SHORT",
             "entry": round(close, 2),
             "stop": round(close * 1.005, 2),
-            "take": round(close * 0.985, 2),
+            "take": round(close * 0.98, 2),
             "ema20": round(ema20, 2),
             "ema50": round(ema50, 2),
             "rsi": round(rsi, 2),
-            "reason": "Тренд вниз + импульс"
+            "reason": "Откат к EMA20 + тренд вниз"
         }
 
     return None
 
 
-# 📝 Формат сообщения
+# 📝 Формат
 def format_signal(sig, tf):
     return f"""
 🚀 ФЬЮЧЕРС СИГНАЛ
 
 SOLUSDT
-Таймфрейм: {tf}
+Таймфрейм: {tf}m
 Тип: {sig['type']}
 
 Вход: {sig['entry']}
@@ -140,7 +145,7 @@ RSI14: {sig['rsi']}
 """
 
 
-# 🔁 Основной цикл
+# 🔁 Цикл
 def run_bot():
     while True:
         try:
@@ -160,7 +165,7 @@ def run_bot():
         except Exception as e:
             print("Ошибка:", e)
 
-        time.sleep(90)  # меньше банов
+        time.sleep(90)
 
 
 # 🚀 СТАРТ
