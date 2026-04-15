@@ -7,23 +7,36 @@ BOT_TOKEN = "ТВОЙ_BOT_TOKEN"
 CHAT_ID = "ТВОЙ_CHAT_ID"
 
 SYMBOL = "SOLUSDT"
-INTERVALS = ["5", "15"]  # Bybit формат
+INTERVALS = ["5", "15"]
 
 last_signal_time = {}
 
-# 📊 Bybit данные
+# 📊 Bybit данные (ЖЕЛЕЗОБЕТОН)
 def get_data(symbol, interval):
     url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit=100"
 
     try:
         response = requests.get(url, timeout=10)
-        data = response.json()
+
+        if response.status_code != 200 or not response.text:
+            print("Bybit пустой ответ")
+            return None
+
+        try:
+            data = response.json()
+        except:
+            print("Ошибка JSON")
+            return None
 
         if "result" not in data or "list" not in data["result"]:
-            print("Нет данных от Bybit")
+            print("Нет данных Bybit")
             return None
 
         klines = data["result"]["list"]
+
+        if not klines:
+            print("Пустые свечи")
+            return None
 
         df = pd.DataFrame(klines, columns=[
             "time","open","high","low","close","volume","turnover"
@@ -74,7 +87,7 @@ def send_telegram(text):
         print("Ошибка Telegram:", e)
 
 
-# 🧠 УМНЫЙ ВХОД (ОТКАТ К EMA)
+# 🧠 УМНЫЙ ВХОД (ОТКАТ)
 def check_signal(data):
     close = data['close']
     ema20 = data['ema20']
@@ -83,7 +96,7 @@ def check_signal(data):
 
     distance = abs(close - ema20) / ema20
 
-    # 🔼 LONG (после отката)
+    # LONG
     if (
         ema20 > ema50 and
         45 < rsi < 65 and
@@ -101,7 +114,7 @@ def check_signal(data):
             "reason": "Откат к EMA20 + тренд вверх"
         }
 
-    # 🔽 SHORT (после отката)
+    # SHORT
     if (
         ema20 < ema50 and
         35 < rsi < 55 and
@@ -150,6 +163,8 @@ def run_bot():
     while True:
         try:
             for tf in INTERVALS:
+                time.sleep(2)  # защита от бана API
+
                 data = get_data(SYMBOL, tf)
 
                 if data is None:
