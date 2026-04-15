@@ -11,47 +11,51 @@ INTERVALS = ["5m", "15m"]
 
 last_signal_time = {}
 
-# 📊 Получение данных (СТАБИЛЬНО)
+# 📊 Получение данных (УЛУЧШЕННОЕ)
 def get_data(symbol, interval):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
-    
-    try:
-        response = requests.get(url, timeout=10)
-        data = response.json()
+    urls = [
+        f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100",
+        f"https://api1.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100",
+        f"https://api2.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
+    ]
 
-        # ❗ защита от пустого ответа
-        if not isinstance(data, list) or len(data) == 0:
-            print("Нет данных от Binance")
-            return None
+    for url in urls:
+        try:
+            response = requests.get(url, timeout=10)
+            data = response.json()
 
-        df = pd.DataFrame(data, columns=[
-            "time","open","high","low","close","volume",
-            "close_time","qav","trades","tbbav","tbqav","ignore"
-        ])
+            # ✅ если есть нормальные данные
+            if isinstance(data, list) and len(data) > 0:
 
-        df['close'] = df['close'].astype(float)
+                df = pd.DataFrame(data, columns=[
+                    "time","open","high","low","close","volume",
+                    "close_time","qav","trades","tbbav","tbqav","ignore"
+                ])
 
-        # EMA
-        df['ema20'] = df['close'].ewm(span=20).mean()
-        df['ema50'] = df['close'].ewm(span=50).mean()
+                df['close'] = df['close'].astype(float)
 
-        # RSI
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                # EMA
+                df['ema20'] = df['close'].ewm(span=20).mean()
+                df['ema50'] = df['close'].ewm(span=50).mean()
 
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
+                # RSI
+                delta = df['close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
 
-        # ❗ защита если мало данных
-        if df.empty:
-            return None
+                rs = gain / loss
+                df['rsi'] = 100 - (100 / (1 + rs))
 
-        return df.iloc[-1]
+                if df.empty:
+                    continue
 
-    except Exception as e:
-        print("Ошибка загрузки:", e)
-        return None
+                return df.iloc[-1]
+
+        except Exception as e:
+            print("Ошибка Binance:", e)
+
+    print("Нет данных от Binance (все сервера)")
+    return None
 
 
 # 🚫 Анти-дубли (раз в 30 мин)
@@ -77,14 +81,14 @@ def send_telegram(text):
         print("Ошибка Telegram:", e)
 
 
-# 🧠 Логика сигналов (2–4 сигнала в день)
+# 🧠 Логика сигналов
 def check_signal(data):
     close = data['close']
     ema20 = data['ema20']
     ema50 = data['ema50']
     rsi = data['rsi']
 
-    # LONG
+    # 🔼 LONG
     if ema20 > ema50 and 50 < rsi < 70:
         return {
             "type": "LONG",
@@ -97,7 +101,7 @@ def check_signal(data):
             "reason": "Тренд вверх + импульс"
         }
 
-    # SHORT
+    # 🔽 SHORT
     if ema20 < ema50 and 30 < rsi < 50:
         return {
             "type": "SHORT",
@@ -143,7 +147,6 @@ def run_bot():
             for tf in INTERVALS:
                 data = get_data(SYMBOL, tf)
 
-                # ❗ если нет данных — пропускаем
                 if data is None:
                     continue
 
@@ -157,7 +160,7 @@ def run_bot():
         except Exception as e:
             print("Ошибка:", e)
 
-        time.sleep(60)
+        time.sleep(90)  # меньше банов
 
 
 # 🚀 СТАРТ
