@@ -2,8 +2,8 @@ import requests
 import pandas as pd
 import time
 
-# 🔑 ВСТАВЬ СЮДА
-BOT_TOKEN = "ТВОЙ_ТОКЕН"
+# 🔑 ВСТАВЬ СВОИ ДАННЫЕ
+BOT_TOKEN = "ТВОЙ_BOT_TOKEN"
 CHAT_ID = "ТВОЙ_CHAT_ID"
 
 SYMBOL = "SOLUSDT"
@@ -11,14 +11,16 @@ INTERVALS = ["5m", "15m"]
 
 last_signal_time = {}
 
-# 📊 Получение данных Binance
+# 📊 Получение данных Binance (исправлено!)
 def get_data(symbol, interval):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
     data = requests.get(url).json()
 
-    df = pd.DataFrame(data)
-    df = df[[4]]  # close
-    df.columns = ['close']
+    df = pd.DataFrame(data, columns=[
+        "time","open","high","low","close","volume",
+        "close_time","qav","trades","tbbav","tbqav","ignore"
+    ])
+
     df['close'] = df['close'].astype(float)
 
     # EMA
@@ -36,7 +38,7 @@ def get_data(symbol, interval):
     return df.iloc[-1]
 
 
-# 🚫 Анти-дубли (не чаще 1 раза в 30 мин)
+# 🚫 Анти-дубли (раз в 30 мин)
 def can_send(symbol, tf):
     now = time.time()
     key = f"{symbol}_{tf}"
@@ -47,20 +49,23 @@ def can_send(symbol, tf):
     return False
 
 
-# 📩 Отправка в Telegram
+# 📩 Telegram
 def send_telegram(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": text})
+    requests.post(url, data={
+        "chat_id": CHAT_ID,
+        "text": text
+    })
 
 
-# 🧠 Логика сигналов
+# 🧠 Сигналы (оптимально под 2–4 в день)
 def check_signal(data):
     close = data['close']
     ema20 = data['ema20']
     ema50 = data['ema50']
     rsi = data['rsi']
 
-    # 🔼 LONG
+    # LONG
     if ema20 > ema50 and 50 < rsi < 70:
         return {
             "type": "LONG",
@@ -73,7 +78,7 @@ def check_signal(data):
             "reason": "Тренд вверх + импульс"
         }
 
-    # 🔽 SHORT
+    # SHORT
     if ema20 < ema50 and 30 < rsi < 50:
         return {
             "type": "SHORT",
@@ -89,7 +94,7 @@ def check_signal(data):
     return None
 
 
-# 📝 Формат сообщения
+# 📝 Формат
 def format_signal(sig, tf):
     return f"""
 🚀 ФЬЮЧЕРС СИГНАЛ
@@ -112,7 +117,7 @@ RSI14: {sig['rsi']}
 """
 
 
-# 🔁 Основной цикл (проверка экрана)
+# 🔁 Основной цикл
 def run_bot():
     while True:
         try:
@@ -123,13 +128,13 @@ def run_bot():
                 if signal and can_send(SYMBOL, tf):
                     message = format_signal(signal, tf)
                     send_telegram(message)
-                    print(f"Отправлен сигнал {tf}")
+                    print(f"Сигнал отправлен: {tf}")
 
         except Exception as e:
             print("Ошибка:", e)
 
-        time.sleep(60)  # проверка каждую минуту
+        time.sleep(60)
 
 
-# 🚀 ЗАПУСК
+# 🚀 СТАРТ
 run_bot()
