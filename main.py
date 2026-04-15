@@ -11,57 +11,74 @@ INTERVALS = ["5", "15"]
 
 last_signal_time = {}
 
-# 📊 Bybit данные (ЖЕЛЕЗОБЕТОН)
+# 📊 UNIVERSAL DATA (Bybit + Binance fallback)
 def get_data(symbol, interval):
-    url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit=100"
 
+    # --- 1. ПРОБУЕМ BYBIT ---
     try:
-        response = requests.get(url, timeout=10)
+        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={interval}&limit=100"
+        r = requests.get(url, timeout=10)
 
-        if response.status_code != 200 or not response.text:
-            print("Bybit пустой ответ")
-            return None
+        if r.status_code == 200:
+            data = r.json()
 
-        try:
-            data = response.json()
-        except:
-            print("Ошибка JSON")
-            return None
+            if "result" in data and "list" in data["result"]:
+                klines = data["result"]["list"]
 
-        if "result" not in data or "list" not in data["result"]:
-            print("Нет данных Bybit")
-            return None
+                if klines:
+                    df = pd.DataFrame(klines, columns=[
+                        "time","open","high","low","close","volume","turnover"
+                    ])
 
-        klines = data["result"]["list"]
+                    df['close'] = df['close'].astype(float)
+                    df = df[::-1]
 
-        if not klines:
-            print("Пустые свечи")
-            return None
+                    df['ema20'] = df['close'].ewm(span=20).mean()
+                    df['ema50'] = df['close'].ewm(span=50).mean()
 
-        df = pd.DataFrame(klines, columns=[
-            "time","open","high","low","close","volume","turnover"
-        ])
+                    delta = df['close'].diff()
+                    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                    rs = gain / loss
+                    df['rsi'] = 100 - (100 / (1 + rs))
 
-        df['close'] = df['close'].astype(float)
-        df = df[::-1]
+                    return df.iloc[-1]
 
-        # EMA
-        df['ema20'] = df['close'].ewm(span=20).mean()
-        df['ema50'] = df['close'].ewm(span=50).mean()
+    except:
+        print("Bybit не ответил")
 
-        # RSI
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+    # --- 2. ПРОБУЕМ BINANCE ---
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}m&limit=100"
+        r = requests.get(url, timeout=10)
 
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
+        if r.status_code == 200:
+            data = r.json()
 
-        return df.iloc[-1]
+            if isinstance(data, list) and len(data) > 0:
+                df = pd.DataFrame(data, columns=[
+                    "time","open","high","low","close","volume",
+                    "close_time","qav","trades","tbbav","tbqav","ignore"
+                ])
 
-    except Exception as e:
-        print("Ошибка Bybit:", e)
-        return None
+                df['close'] = df['close'].astype(float)
+
+                df['ema20'] = df['close'].ewm(span=20).mean()
+                df['ema50'] = df['close'].ewm(span=50).mean()
+
+                delta = df['close'].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                rs = gain / loss
+                df['rsi'] = 100 - (100 / (1 + rs))
+
+                return df.iloc[-1]
+
+    except:
+        print("Binance не ответил")
+
+    print("Нет данных ни от одного API")
+    return None
 
 
 # 🚫 Анти-дубли
@@ -79,15 +96,12 @@ def can_send(symbol, tf):
 def send_telegram(text):
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={
-            "chat_id": CHAT_ID,
-            "text": text
-        }, timeout=10)
-    except Exception as e:
-        print("Ошибка Telegram:", e)
+        requests.post(url, data={"chat_id": CHAT_ID, "text": text}, timeout=10)
+    except:
+        print("Ошибка Telegram")
 
 
-# 🧠 УМНЫЙ ВХОД (ОТКАТ)
+# 🧠 УМНЫЙ ВХОД
 def check_signal(data):
     close = data['close']
     ema20 = data['ema20']
@@ -97,12 +111,7 @@ def check_signal(data):
     distance = abs(close - ema20) / ema20
 
     # LONG
-    if (
-        ema20 > ema50 and
-        45 < rsi < 65 and
-        close <= ema20 * 1.002 and
-        distance < 0.003
-    ):
+    if ema20 > ema50 and 45 < rsi < 65 and distance < 0.003:
         return {
             "type": "LONG",
             "entry": round(close, 2),
@@ -111,16 +120,11 @@ def check_signal(data):
             "ema20": round(ema20, 2),
             "ema50": round(ema50, 2),
             "rsi": round(rsi, 2),
-            "reason": "Откат к EMA20 + тренд вверх"
+            "reason": "Откат + тренд вверх"
         }
 
     # SHORT
-    if (
-        ema20 < ema50 and
-        35 < rsi < 55 and
-        close >= ema20 * 0.998 and
-        distance < 0.003
-    ):
+    if ema20 < ema50 and 35 < rsi < 55 and distance < 0.003:
         return {
             "type": "SHORT",
             "entry": round(close, 2),
@@ -129,7 +133,7 @@ def check_signal(data):
             "ema20": round(ema20, 2),
             "ema50": round(ema50, 2),
             "rsi": round(rsi, 2),
-            "reason": "Откат к EMA20 + тренд вниз"
+            "reason": "Откат + тренд вниз"
         }
 
     return None
@@ -163,7 +167,7 @@ def run_bot():
     while True:
         try:
             for tf in INTERVALS:
-                time.sleep(2)  # защита от бана API
+                time.sleep(2)
 
                 data = get_data(SYMBOL, tf)
 
@@ -173,9 +177,8 @@ def run_bot():
                 signal = check_signal(data)
 
                 if signal and can_send(SYMBOL, tf):
-                    message = format_signal(signal, tf)
-                    send_telegram(message)
-                    print(f"Сигнал отправлен: {tf}")
+                    send_telegram(format_signal(signal, tf))
+                    print("Сигнал отправлен")
 
         except Exception as e:
             print("Ошибка:", e)
