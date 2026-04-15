@@ -11,31 +11,47 @@ INTERVALS = ["5m", "15m"]
 
 last_signal_time = {}
 
-# 📊 Получение данных Binance (исправлено!)
+# 📊 Получение данных (СТАБИЛЬНО)
 def get_data(symbol, interval):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
-    data = requests.get(url).json()
+    
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
 
-    df = pd.DataFrame(data, columns=[
-        "time","open","high","low","close","volume",
-        "close_time","qav","trades","tbbav","tbqav","ignore"
-    ])
+        # ❗ защита от пустого ответа
+        if not isinstance(data, list) or len(data) == 0:
+            print("Нет данных от Binance")
+            return None
 
-    df['close'] = df['close'].astype(float)
+        df = pd.DataFrame(data, columns=[
+            "time","open","high","low","close","volume",
+            "close_time","qav","trades","tbbav","tbqav","ignore"
+        ])
 
-    # EMA
-    df['ema20'] = df['close'].ewm(span=20).mean()
-    df['ema50'] = df['close'].ewm(span=50).mean()
+        df['close'] = df['close'].astype(float)
 
-    # RSI
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        # EMA
+        df['ema20'] = df['close'].ewm(span=20).mean()
+        df['ema50'] = df['close'].ewm(span=50).mean()
 
-    rs = gain / loss
-    df['rsi'] = 100 - (100 / (1 + rs))
+        # RSI
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
 
-    return df.iloc[-1]
+        rs = gain / loss
+        df['rsi'] = 100 - (100 / (1 + rs))
+
+        # ❗ защита если мало данных
+        if df.empty:
+            return None
+
+        return df.iloc[-1]
+
+    except Exception as e:
+        print("Ошибка загрузки:", e)
+        return None
 
 
 # 🚫 Анти-дубли (раз в 30 мин)
@@ -51,14 +67,17 @@ def can_send(symbol, tf):
 
 # 📩 Telegram
 def send_telegram(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.post(url, data={
-        "chat_id": CHAT_ID,
-        "text": text
-    })
+    try:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        requests.post(url, data={
+            "chat_id": CHAT_ID,
+            "text": text
+        }, timeout=10)
+    except Exception as e:
+        print("Ошибка Telegram:", e)
 
 
-# 🧠 Сигналы (оптимально под 2–4 в день)
+# 🧠 Логика сигналов (2–4 сигнала в день)
 def check_signal(data):
     close = data['close']
     ema20 = data['ema20']
@@ -94,7 +113,7 @@ def check_signal(data):
     return None
 
 
-# 📝 Формат
+# 📝 Формат сообщения
 def format_signal(sig, tf):
     return f"""
 🚀 ФЬЮЧЕРС СИГНАЛ
@@ -123,6 +142,11 @@ def run_bot():
         try:
             for tf in INTERVALS:
                 data = get_data(SYMBOL, tf)
+
+                # ❗ если нет данных — пропускаем
+                if data is None:
+                    continue
+
                 signal = check_signal(data)
 
                 if signal and can_send(SYMBOL, tf):
