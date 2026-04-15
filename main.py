@@ -1,123 +1,135 @@
-import os
-import time
 import requests
+import pandas as pd
+import time
 
-TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+# 🔑 ВСТАВЬ СЮДА
+BOT_TOKEN = "ТВОЙ_ТОКЕН"
+CHAT_ID = "ТВОЙ_CHAT_ID"
 
-KRAKEN_URL = "https://api.kraken.com/0/public/OHLC"
-PAIR = "SOLUSD"
-INTERVAL = 15
+SYMBOL = "SOLUSDT"
+INTERVALS = ["5m", "15m"]
 
-last_signal = None
+last_signal_time = {}
 
+# 📊 Получение данных Binance
+def get_data(symbol, interval):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
+    data = requests.get(url).json()
 
-def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    data = {"chat_id": CHAT_ID, "text": message}
-    requests.post(url, data=data)
+    df = pd.DataFrame(data)
+    df = df[[4]]  # close
+    df.columns = ['close']
+    df['close'] = df['close'].astype(float)
 
+    # EMA
+    df['ema20'] = df['close'].ewm(span=20).mean()
+    df['ema50'] = df['close'].ewm(span=50).mean()
 
-def get_data():
-    params = {"pair": PAIR, "interval": INTERVAL}
-    r = requests.get(KRAKEN_URL, params=params)
-    data = r.json()
+    # RSI
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
 
-    pair_key = list(data["result"].keys())[0]
-    candles = data["result"][pair_key]
+    rs = gain / loss
+    df['rsi'] = 100 - (100 / (1 + rs))
 
-    closes = [float(c[4]) for c in candles]
-    return closes
-
-
-def ema(data, period):
-    k = 2 / (period + 1)
-    ema_val = sum(data[:period]) / period
-
-    for price in data[period:]:
-        ema_val = price * k + ema_val * (1 - k)
-
-    return ema_val
+    return df.iloc[-1]
 
 
-def rsi(data, period=14):
-    gains, losses = [], []
+# 🚫 Анти-дубли (не чаще 1 раза в 30 мин)
+def can_send(symbol, tf):
+    now = time.time()
+    key = f"{symbol}_{tf}"
 
-    for i in range(1, len(data)):
-        diff = data[i] - data[i - 1]
-        gains.append(max(diff, 0))
-        losses.append(abs(min(diff, 0)))
-
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-
-    if avg_loss == 0:
-        return 100
-
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+    if key not in last_signal_time or now - last_signal_time[key] > 1800:
+        last_signal_time[key] = now
+        return True
+    return False
 
 
-def check_signal():
-    global last_signal
+# 📩 Отправка в Telegram
+def send_telegram(text):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": CHAT_ID, "text": text})
 
-    closes = get_data()
-    price = closes[-1]
 
-    ema20 = ema(closes, 20)
-    ema50 = ema(closes, 50)
-    ema200 = ema(closes, 200)
-    rsi14 = rsi(closes)
+# 🧠 Логика сигналов
+def check_signal(data):
+    close = data['close']
+    ema20 = data['ema20']
+    ema50 = data['ema50']
+    rsi = data['rsi']
 
-    signal = None
-    reason = ""
+    # 🔼 LONG
+    if ema20 > ema50 and 50 < rsi < 70:
+        return {
+            "type": "LONG",
+            "entry": round(close, 2),
+            "stop": round(close * 0.995, 2),
+            "take": round(close * 1.015, 2),
+            "ema20": round(ema20, 2),
+            "ema50": round(ema50, 2),
+            "rsi": round(rsi, 2),
+            "reason": "Тренд вверх + импульс"
+        }
 
-    # 🟢 LONG (BUY)
-    if ema50 > ema200 and ema20 > ema50 and price > ema20 and rsi14 > 55:
-        signal = "LONG"
-        reason = "Тренд вверх + импульс"
+    # 🔽 SHORT
+    if ema20 < ema50 and 30 < rsi < 50:
+        return {
+            "type": "SHORT",
+            "entry": round(close, 2),
+            "stop": round(close * 1.005, 2),
+            "take": round(close * 0.985, 2),
+            "ema20": round(ema20, 2),
+            "ema50": round(ema50, 2),
+            "rsi": round(rsi, 2),
+            "reason": "Тренд вниз + импульс"
+        }
 
-    # 🔴 SHORT (SELL)
-    elif ema50 < ema200 and ema20 < ema50 and price < ema20 and rsi14 < 45:
-        signal = "SHORT"
-        reason = "Тренд вниз + импульс"
+    return None
 
-    if signal and signal != last_signal:
-        last_signal = signal
 
-        # 🎯 настройки под фьючи
-        stop = price * (0.995 if signal == "LONG" else 1.005)
-        take = price * (1.03 if signal == "LONG" else 0.97)
-
-        message = f"""
+# 📝 Формат сообщения
+def format_signal(sig, tf):
+    return f"""
 🚀 ФЬЮЧЕРС СИГНАЛ
 
-SOLUSD
-Таймфрейм: 15m
-Тип: {signal}
+SOLUSDT
+Таймфрейм: {tf}
+Тип: {sig['type']}
 
-Вход: {round(price,2)}
-Стоп: {round(stop,2)}
-Тейк: {round(take,2)}
+Вход: {sig['entry']}
+Стоп: {sig['stop']}
+Тейк: {sig['take']}
 
 RR: ~1:3
 
-EMA20: {round(ema20,2)}
-EMA50: {round(ema50,2)}
-EMA200: {round(ema200,2)}
-RSI14: {round(rsi14,2)}
+EMA20: {sig['ema20']}
+EMA50: {sig['ema50']}
+RSI14: {sig['rsi']}
 
-Причина: {reason}
+Причина: {sig['reason']}
 """
-        send_telegram(message)
 
 
-print("🚀 Фьючерс бот запущен")
+# 🔁 Основной цикл (проверка экрана)
+def run_bot():
+    while True:
+        try:
+            for tf in INTERVALS:
+                data = get_data(SYMBOL, tf)
+                signal = check_signal(data)
 
-while True:
-    try:
-        check_signal()
-        time.sleep(60)
-    except Exception as e:
-        print("Ошибка:", e)
-        time.sleep(60)
+                if signal and can_send(SYMBOL, tf):
+                    message = format_signal(signal, tf)
+                    send_telegram(message)
+                    print(f"Отправлен сигнал {tf}")
+
+        except Exception as e:
+            print("Ошибка:", e)
+
+        time.sleep(60)  # проверка каждую минуту
+
+
+# 🚀 ЗАПУСК
+run_bot()
