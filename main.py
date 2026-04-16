@@ -5,27 +5,28 @@ import os
 TELEGRAM_TOKEN = os.getenv("8789386024:AAGYqKNnmobz2oAruOLcJbcbaASEipgvD9g")
 CHAT_ID = os.getenv("421535087")
 
-SYMBOL = "SOLUSDT"
+last_signal = None
 
 def send_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(url, json={"chat_id": CHAT_ID, "text": text})
 
 def get_price():
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={SYMBOL}"
     try:
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd"
         data = requests.get(url).json()
-        return float(data["price"])
+        return float(data["solana"]["usd"])
     except:
         return None
 
-last_signal = None
+send_message("✅ Бот запущен")
 
 while True:
     price = get_price()
 
     if price:
-        # ПРОСТАЯ ЛОГИКА
+        print("Цена:", price)
+
         if price > 90 and last_signal != "BUY":
             send_message(f"🚀 BUY SOL\nЦена: {price}")
             last_signal = "BUY"
