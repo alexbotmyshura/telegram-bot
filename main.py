@@ -1,69 +1,37 @@
-from flask import Flask, request
 import requests
+import time
 import os
 
-app = Flask(__name__)
+TELEGRAM_TOKEN = os.getenv("8789386024:AAGYqKNnmobz2oAruOLcJbcbaASEipgvD9g")
+CHAT_ID = os.getenv("421535087")
 
-# 👉 ВСТАВЬ СЮДА СВОИ ДАННЫЕ
-BOT_TOKEN = "8789386024:AAGYqKNnmobz2oAruOLcJbcbaASEipgvD9g"
-CHAT_ID = "421535087"
-
+SYMBOL = "SOLUSDT"
 
 def send_message(text):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": text
-    }
-    requests.post(url, json=payload)
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, json={"chat_id": CHAT_ID, "text": text})
 
+def get_price():
+    url = f"https://api.binance.com/api/v3/ticker/price?symbol={SYMBOL}"
+    try:
+        data = requests.get(url).json()
+        return float(data["price"])
+    except:
+        return None
 
-@app.route("/")
-def home():
-    return "Bot is running"
+last_signal = None
 
+while True:
+    price = get_price()
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    data = request.data.decode("utf-8")
+    if price:
+        # ПРОСТАЯ ЛОГИКА
+        if price > 90 and last_signal != "BUY":
+            send_message(f"🚀 BUY SOL\nЦена: {price}")
+            last_signal = "BUY"
 
-    print("DATA:", data)
+        elif price < 85 and last_signal != "SELL":
+            send_message(f"🔻 SELL SOL\nЦена: {price}")
+            last_signal = "SELL"
 
-    if "BUY" in data:
-        msg = f"""🚀 СИГНАЛ BUY
-
-Пара: SOLUSDT
-Таймфрейм: 15m
-
-Вход: по рынку
-Стоп: ~1%
-Тейк: ~3%
-
-Причина:
-EMA20 > EMA50
-RSI сильный
-"""
-        send_message(msg)
-
-    elif "SELL" in data:
-        msg = f"""🔻 СИГНАЛ SELL
-
-Пара: SOLUSDT
-Таймфрейм: 15m
-
-Вход: по рынку
-Стоп: ~1%
-Тейк: ~3%
-
-Причина:
-EMA20 < EMA50
-RSI слабый
-"""
-        send_message(msg)
-
-    return "ok"
-
-
-# 🔥 ВАЖНО — ДЛЯ RAILWAY
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 3000)))
+    time.sleep(60)
