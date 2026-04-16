@@ -1,168 +1,166 @@
 import requests
-import pandas as pd
 import time
+import pandas as pd
 
-# 🔑 ВСТАВЬ СВОИ ДАННЫЕ
-BOT_TOKEN = "ТВОЙ_BOT_TOKEN"
-CHAT_ID = "ТВОЙ_CHAT_ID"
+TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН"
+CHAT_ID = "421535087"
 
 SYMBOL = "SOLUSDT"
-INTERVALS = ["5m", "15m"]
+INTERVAL = "15m"
+LIMIT = 200
 
-last_signal_time = {}
+last_signal_time = None
 
-# 📊 DATA через proxy (работает в Railway)
-def get_data(symbol, interval):
-    url = f"https://api.allorigins.win/raw?url=https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
-
+# ---------- TELEGRAM ----------
+def send_message(text):
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     try:
-        response = requests.get(url, timeout=15)
-
-        if response.status_code != 200:
-            print("Ошибка proxy")
-            return None
-
-        data = response.json()
-
-        if not isinstance(data, list) or len(data) == 0:
-            print("Нет данных")
-            return None
-
-        df = pd.DataFrame(data, columns=[
-            "time","open","high","low","close","volume",
-            "close_time","qav","trades","tbbav","tbqav","ignore"
-        ])
-
-        df['close'] = df['close'].astype(float)
-
-        # EMA
-        df['ema20'] = df['close'].ewm(span=20).mean()
-        df['ema50'] = df['close'].ewm(span=50).mean()
-
-        # RSI
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-
-        rs = gain / loss
-        df['rsi'] = 100 - (100 / (1 + rs))
-
-        return df.iloc[-1]
-
-    except Exception as e:
-        print("Ошибка:", e)
-        return None
-
-
-# 🚫 Анти-дубли
-def can_send(symbol, tf):
-    now = time.time()
-    key = f"{symbol}_{tf}"
-
-    if key not in last_signal_time or now - last_signal_time[key] > 1800:
-        last_signal_time[key] = now
-        return True
-    return False
-
-
-# 📩 Telegram
-def send_telegram(text):
-    try:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        requests.post(url, data={
+        r = requests.post(url, data={
             "chat_id": CHAT_ID,
             "text": text
         }, timeout=10)
+        print("TG:", r.status_code)
     except Exception as e:
-        print("Ошибка Telegram:", e)
+        print("TG ERROR:", e)
 
+# ---------- BINANCE ----------
+def get_data():
+    url = f"https://api.binance.com/api/v3/klines?symbol={SYMBOL}&interval={INTERVAL}&limit={LIMIT}"
 
-# 🧠 УМНЫЙ ВХОД
-def check_signal(data):
-    close = data['close']
-    ema20 = data['ema20']
-    ema50 = data['ema50']
-    rsi = data['rsi']
+    for _ in range(3):
+        try:
+            r = requests.get(url, timeout=10)
+            data = r.json()
 
-    distance = abs(close - ema20) / ema20
+            df = pd.DataFrame(data)
+            df = df.iloc[:, :6]
+            df.columns = ["time", "open", "high", "low", "close", "volume"]
 
-    # LONG
-    if ema20 > ema50 and 45 < rsi < 65 and distance < 0.003:
-        return {
-            "type": "LONG",
-            "entry": round(close, 2),
-            "stop": round(close * 0.995, 2),
-            "take": round(close * 1.02, 2),
-            "ema20": round(ema20, 2),
-            "ema50": round(ema50, 2),
-            "rsi": round(rsi, 2),
-            "reason": "Откат + тренд вверх"
-        }
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = df[col].astype(float)
 
-    # SHORT
-    if ema20 < ema50 and 35 < rsi < 55 and distance < 0.003:
-        return {
-            "type": "SHORT",
-            "entry": round(close, 2),
-            "stop": round(close * 1.005, 2),
-            "take": round(close * 0.98, 2),
-            "ema20": round(ema20, 2),
-            "ema50": round(ema50, 2),
-            "rsi": round(rsi, 2),
-            "reason": "Откат + тренд вниз"
-        }
+            df["time"] = df["time"].astype(int)
+            return df
+
+        except Exception as e:
+            print("Binance error:", e)
+            time.sleep(5)
 
     return None
 
+# ---------- INDICATORS ----------
+def calculate(df):
+    df["EMA20"] = df["close"].ewm(span=20).mean()
+    df["EMA50"] = df["close"].ewm(span=50).mean()
 
-# 📝 Формат
-def format_signal(sig, tf):
-    return f"""
-🚀 ФЬЮЧЕРС СИГНАЛ
+    delta = df["close"].diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
 
-SOLUSDT
-Таймфрейм: {tf}
-Тип: {sig['type']}
+    avg_gain = gain.rolling(14).mean()
+    avg_loss = loss.rolling(14).mean()
 
-Вход: {sig['entry']}
-Стоп: {sig['stop']}
-Тейк: {sig['take']}
+    rs = avg_gain / avg_loss
+    df["RSI"] = 100 - (100 / (1 + rs))
 
-RR: ~1:3
+    # ATR
+    prev_close = df["close"].shift(1)
+    tr = pd.concat([
+        df["high"] - df["low"],
+        (df["high"] - prev_close).abs(),
+        (df["low"] - prev_close).abs()
+    ], axis=1).max(axis=1)
 
-EMA20: {sig['ema20']}
-EMA50: {sig['ema50']}
-RSI14: {sig['rsi']}
+    df["ATR"] = tr.rolling(14).mean()
 
-Причина: {sig['reason']}
+    return df
+
+# ---------- SIGNAL ----------
+def check_signal(df):
+    global last_signal_time
+
+    last = df.iloc[-1]
+
+    price = last["close"]
+    ema20 = last["EMA20"]
+    ema50 = last["EMA50"]
+    rsi = last["RSI"]
+    atr = last["ATR"]
+    candle_time = last["time"]
+
+    if last_signal_time == candle_time:
+        return None
+
+    # LONG
+    if ema20 > ema50 and rsi > 45 and price < ema20 * 1.01:
+        entry = price
+        stop = price - atr * 1.2
+        take = price + (entry - stop) * 2.5
+
+        last_signal_time = candle_time
+
+        return f"""🟢 VIP LONG
+
+{SYMBOL}
+TF: {INTERVAL}
+
+Вход: {entry:.2f}
+Стоп: {stop:.2f}
+Тейк: {take:.2f}
+
+EMA20: {ema20:.2f}
+EMA50: {ema50:.2f}
+RSI: {rsi:.2f}
 """
 
+    # SHORT
+    if ema20 < ema50 and rsi < 55 and price > ema20 * 0.99:
+        entry = price
+        stop = price + atr * 1.2
+        take = price - (stop - entry) * 2.5
 
-# 🔁 Цикл
-def run_bot():
-    send_telegram("Бот запущен 🚀")
+        last_signal_time = candle_time
+
+        return f"""🔻 VIP SHORT
+
+{SYMBOL}
+TF: {INTERVAL}
+
+Вход: {entry:.2f}
+Стоп: {stop:.2f}
+Тейк: {take:.2f}
+
+EMA20: {ema20:.2f}
+EMA50: {ema50:.2f}
+RSI: {rsi:.2f}
+"""
+
+    return None
+
+# ---------- MAIN LOOP ----------
+def main():
+    send_message("🔥 VIP бот запущен")
 
     while True:
         try:
-            for tf in INTERVALS:
-                time.sleep(2)
+            df = get_data()
 
-                data = get_data(SYMBOL, tf)
+            if df is None:
+                time.sleep(60)
+                continue
 
-                if data is None:
-                    continue
+            df = calculate(df)
+            signal = check_signal(df)
 
-                signal = check_signal(data)
+            if signal:
+                send_message(signal)
+                time.sleep(120)
 
-                if signal and can_send(SYMBOL, tf):
-                    send_telegram(format_signal(signal, tf))
-                    print("Сигнал отправлен")
+            time.sleep(60)
 
         except Exception as e:
-            print("Ошибка:", e)
+            print("ERROR:", e)
+            time.sleep(60)
 
-        time.sleep(90)
-
-
-# 🚀 СТАРТ
-run_bot()
+# ---------- START ----------
+main()
