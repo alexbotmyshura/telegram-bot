@@ -2,7 +2,7 @@ import requests
 import time
 import pandas as pd
 
-TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН"
+TOKEN = "8789386024:AAGYqKNnmobz2oAruOLcJbcbaASEipgvD9g"
 CHAT_ID = "421535087"
 
 SYMBOL = "SOLUSDT"
