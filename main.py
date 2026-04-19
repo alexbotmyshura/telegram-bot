@@ -79,12 +79,12 @@ def check_signal():
     ema50 = df["ema50"].iloc[-1]
     rsi = df["rsi"].iloc[-1]
 
-    # ❌ фильтр боковика
-    if pd.isna(rsi) or 45 < rsi < 55:
+    # ❌ фильтр слабых зон (сужен для увеличения сигналов)
+    if pd.isna(rsi) or 48 < rsi < 52:
         return None
 
     # 🚀 LONG
-    if trend == "LONG" and ema20 > ema50 and rsi > 55 and price <= ema20:
+    if trend == "LONG" and ema20 > ema50 and rsi > 52 and price <= ema20 * 1.002:
         entry = price
         stop = entry * 0.985
         take1 = entry * 1.02
@@ -101,7 +101,7 @@ RSI: {rsi:.2f}
 """
 
     # 🔻 SHORT
-    if trend == "SHORT" and ema20 < ema50 and rsi < 45 and price >= ema20:
+    if trend == "SHORT" and ema20 < ema50 and rsi < 48 and price >= ema20 * 0.998:
         entry = price
         stop = entry * 1.015
         take1 = entry * 0.98
@@ -129,7 +129,7 @@ while True:
         if signal:
             bot.send_message(CHAT_ID, signal)
             print("✅ Сигнал отправлен")
-            time.sleep(1800)  # пауза 30 мин после сигнала
+            time.sleep(1800)  # пауза 30 мин
         else:
             print("⏳ Нет сигнала")
             time.sleep(300)  # проверка каждые 5 мин
