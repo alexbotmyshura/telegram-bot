@@ -16,52 +16,71 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 # === ДАННЫЕ 15m ===
 def get_data():
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    data = requests.get(url).json()
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+        data = requests.get(url, timeout=10).json()
 
-    df = pd.DataFrame(data, columns=[
-        "time","open","high","low","close","volume",
-        "close_time","qav","trades","tbav","tqav","ignore"
-    ])
+        if not data or len(data) < 50:
+            return None
 
-    df["close"] = df["close"].astype(float)
-    return df
+        df = pd.DataFrame(data, columns=[
+            "time","open","high","low","close","volume",
+            "close_time","qav","trades","tbav","tqav","ignore"
+        ])
+
+        df["close"] = df["close"].astype(float)
+        return df
+    except:
+        return None
 
 # === ТРЕНД 1H ===
 def get_trend():
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=200"
-    data = requests.get(url).json()
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=200"
+        data = requests.get(url, timeout=10).json()
 
-    df = pd.DataFrame(data, columns=[
-        "time","open","high","low","close","volume",
-        "close_time","qav","trades","tbav","tqav","ignore"
-    ])
+        if not data or len(data) < 200:
+            return None
 
-    df["close"] = df["close"].astype(float)
-    df["ema200"] = ta.trend.ema_indicator(df["close"], window=200)
+        df = pd.DataFrame(data, columns=[
+            "time","open","high","low","close","volume",
+            "close_time","qav","trades","tbav","tqav","ignore"
+        ])
 
-    if df["close"].iloc[-1] > df["ema200"].iloc[-1]:
-        return "LONG"
-    else:
-        return "SHORT"
+        df["close"] = df["close"].astype(float)
+        df["ema200"] = ta.trend.ema_indicator(df["close"], window=200)
+
+        if pd.isna(df["ema200"].iloc[-1]):
+            return None
+
+        if df["close"].iloc[-1] > df["ema200"].iloc[-1]:
+            return "LONG"
+        else:
+            return "SHORT"
+    except:
+        return None
 
 # === СИГНАЛ ===
 def check_signal():
     df = get_data()
+    if df is None or len(df) < 50:
+        return None
+
+    trend = get_trend()
+    if trend is None:
+        return None
 
     df["ema20"] = ta.trend.ema_indicator(df["close"], window=20)
     df["ema50"] = ta.trend.ema_indicator(df["close"], window=50)
     df["rsi"] = ta.momentum.rsi(df["close"], window=14)
-
-    trend = get_trend()
 
     price = df["close"].iloc[-1]
     ema20 = df["ema20"].iloc[-1]
     ema50 = df["ema50"].iloc[-1]
     rsi = df["rsi"].iloc[-1]
 
-    # ❌ фильтр мусора
-    if 45 < rsi < 55:
+    # ❌ фильтр боковика
+    if pd.isna(rsi) or 45 < rsi < 55:
         return None
 
     # 🚀 LONG
@@ -101,18 +120,20 @@ RSI: {rsi:.2f}
     return None
 
 # === ЗАПУСК ===
+print("Бот запущен...")
+
 while True:
     try:
         signal = check_signal()
 
         if signal:
             bot.send_message(CHAT_ID, signal)
-            print("Сигнал отправлен")
-            time.sleep(1800)  # 30 мин пауза
+            print("✅ Сигнал отправлен")
+            time.sleep(1800)  # пауза 30 мин после сигнала
         else:
-            print("Нет сигнала")
+            print("⏳ Нет сигнала")
             time.sleep(300)  # проверка каждые 5 мин
 
     except Exception as e:
-        print("Ошибка:", e)
+        print("❌ Ошибка:", e)
         time.sleep(60)
