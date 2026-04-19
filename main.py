@@ -2,7 +2,7 @@ import requests
 import pandas as pd
 import ta
 import time
-import telegram
+import telebot
 
 # === НАСТРОЙКИ ===
 BOT_TOKEN = "8789386024:AAEo78wFGwkWV6WGQLTS90p4xr8wYaakQCI"
@@ -12,25 +12,31 @@ symbol = "SOLUSDT"
 interval = "15m"
 limit = 200
 
-bot = telegram.Bot(token=BOT_TOKEN)
+bot = telebot.TeleBot(BOT_TOKEN)
 
+# === ДАННЫЕ 15m ===
 def get_data():
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     data = requests.get(url).json()
+
     df = pd.DataFrame(data, columns=[
         "time","open","high","low","close","volume",
         "close_time","qav","trades","tbav","tqav","ignore"
     ])
+
     df["close"] = df["close"].astype(float)
     return df
 
+# === ТРЕНД 1H ===
 def get_trend():
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=200"
     data = requests.get(url).json()
+
     df = pd.DataFrame(data, columns=[
         "time","open","high","low","close","volume",
         "close_time","qav","trades","tbav","tqav","ignore"
     ])
+
     df["close"] = df["close"].astype(float)
     df["ema200"] = ta.trend.ema_indicator(df["close"], window=200)
 
@@ -39,6 +45,7 @@ def get_trend():
     else:
         return "SHORT"
 
+# === СИГНАЛ ===
 def check_signal():
     df = get_data()
 
@@ -53,11 +60,11 @@ def check_signal():
     ema50 = df["ema50"].iloc[-1]
     rsi = df["rsi"].iloc[-1]
 
-    # Фильтр боковика
+    # ❌ фильтр мусора
     if 45 < rsi < 55:
         return None
 
-    # LONG
+    # 🚀 LONG
     if trend == "LONG" and ema20 > ema50 and rsi > 55 and price <= ema20:
         entry = price
         stop = entry * 0.985
@@ -74,7 +81,7 @@ RSI: {rsi:.2f}
 Тренд: ВВЕРХ
 """
 
-    # SHORT
+    # 🔻 SHORT
     if trend == "SHORT" and ema20 < ema50 and rsi < 45 and price >= ema20:
         entry = price
         stop = entry * 1.015
@@ -93,14 +100,19 @@ RSI: {rsi:.2f}
 
     return None
 
+# === ЗАПУСК ===
 while True:
     try:
         signal = check_signal()
+
         if signal:
-            bot.send_message(chat_id=CHAT_ID, text=signal)
-            time.sleep(1800)  # пауза после сигнала
+            bot.send_message(CHAT_ID, signal)
+            print("Сигнал отправлен")
+            time.sleep(1800)  # 30 мин пауза
         else:
-            time.sleep(300)
+            print("Нет сигнала")
+            time.sleep(300)  # проверка каждые 5 мин
+
     except Exception as e:
-        print(e)
+        print("Ошибка:", e)
         time.sleep(60)
