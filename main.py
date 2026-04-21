@@ -1,76 +1,57 @@
+import os
+import time
 import requests
 import pandas as pd
 import ta
-import time
+import logging
 import telebot
 
-# === НАСТРОЙКИ ===
-BOT_TOKEN = "8789386024:AAEo78wFGwkWV6WGQLTS90p4xr8wYaakQCI"
-CHAT_ID = "421535087"
+# Настройки логирования
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-symbol = "SOLUSDT"
-interval = "15m"
-limit = 200
+# Безопасность: токены и параметры через окружение
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")  # строка, например "123456789"
+
+# Параметры сигнала и рисков
+SYMBOLS = [
+    "SOLUSDT_PERP",
+    "BTCUSDT_PERP",
+    # добавляйте по желанию
+]
+INTERVAL = "15m"
+LIMIT = 200
+
+# Расчёты SL/TP (процент от цены входа)
+SL_PCT = 0.02   # 2% stop loss
+TP_PCT = 0.04   # 4% take profit
+
+if not BOT_TOKEN or not CHAT_ID:
+    logging.error("BOT_TOKEN и CHAT_ID должны быть заданы как переменные окружения.")
+    raise SystemExit(1)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# === ДАННЫЕ 15m ===
-def get_data():
-    try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-        data = requests.get(url, timeout=10).json()
+def fetch_klines(symbol: str, interval: str, limit: int):
+    # REST API Binance Futures (fapi)
+    url = f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
 
-        if not data or len(data) < 50:
-            return None
+def parse_df(data):
+    df = pd.DataFrame(data, columns=[
+        "open_time","open","high","low","close","volume",
+        "close_time","quote_asset_volume","trades","taker_buy_base","taker_buy_quote","ignore"
+    ])
+    df["close"] = df["close"].astype(float)
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+    return df
 
-        df = pd.DataFrame(data, columns=[
-            "time","open","high","low","close","volume",
-            "close_time","qav","trades","tbav","tqav","ignore"
-        ])
-
-        df["close"] = df["close"].astype(float)
-        return df
-    except:
-        return None
-
-# === ТРЕНД 1H ===
-def get_trend():
-    try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=200"
-        data = requests.get(url, timeout=10).json()
-
-        if not data or len(data) < 200:
-            return None
-
-        df = pd.DataFrame(data, columns=[
-            "time","open","high","low","close","volume",
-            "close_time","qav","trades","tbav","tqav","ignore"
-        ])
-
-        df["close"] = df["close"].astype(float)
-        df["ema200"] = ta.trend.ema_indicator(df["close"], window=200)
-
-        if pd.isna(df["ema200"].iloc[-1]):
-            return None
-
-        if df["close"].iloc[-1] > df["ema200"].iloc[-1]:
-            return "LONG"
-        else:
-            return "SHORT"
-    except:
-        return None
-
-# === СИГНАЛ ===
-def check_signal():
-    df = get_data()
-    if df is None or len(df) < 50:
-        return None
-
-    trend = get_trend()
-    if trend is None:
-        return None
-
-    df["ema20"] = ta.trend.ema_indicator(df["close"], window=20)
+def compute_signal(df: pd.DataFrame):
+    # Добавим индикаторы
+    d
+f["ema20"] = ta.trend.ema_indicator(df["close"], window=20)
     df["ema50"] = ta.trend.ema_indicator(df["close"], window=50)
     df["rsi"] = ta.momentum.rsi(df["close"], window=14)
 
@@ -79,61 +60,59 @@ def check_signal():
     ema50 = df["ema50"].iloc[-1]
     rsi = df["rsi"].iloc[-1]
 
-    # ❌ фильтр слабых зон (сужен для увеличения сигналов)
+    # Фильтр: избегаем узких рамок РСИ вокруг 50
     if pd.isna(rsi) or 48 < rsi < 52:
         return None
 
-    # 🚀 LONG
-    if trend == "LONG" and ema20 > ema50 and rsi > 52 and price <= ema20 * 1.002:
+    # LONG
+    if price > ema20 and ema20 > ema50 and rsi > 52:
         entry = price
-        stop = entry * 0.985
-        take1 = entry * 1.02
-        take2 = entry * 1.04
+        sl = entry * (1 - SL_PCT)
+        tp = entry * (1 + TP_PCT)
+        return {
+            "type": "LONG",
+            "symbol": SYMBOL,
+            "price": entry,
+            "rsi": rsi,
+            "sl": sl,
+            "tp": tp
+        }
 
-        return f"""🚀 LONG {symbol}
-
-Вход: {entry:.2f}
-Стоп: {stop:.2f}
-Тейк: {take1:.2f} / {take2:.2f}
-
-RSI: {rsi:.2f}
-Тренд: ВВЕРХ
-"""
-
-    # 🔻 SHORT
-    if trend == "SHORT" and ema20 < ema50 and rsi < 48 and price >= ema20 * 0.998:
+    # SHORT
+    if price < ema20 and ema20 < ema50 and rsi < 48:
         entry = price
-        stop = entry * 1.015
-        take1 = entry * 0.98
-        take2 = entry * 0.96
-
-        return f"""🔻 SHORT {symbol}
-
-Вход: {entry:.2f}
-Стоп: {stop:.2f}
-Тейк: {take1:.2f} / {take2:.2f}
-
-RSI: {rsi:.2f}
-Тренд: ВНИЗ
-"""
+        sl = entry * (1 + SL_PCT)
+        tp = entry * (1 - TP_PCT)
+        return {
+            "type": "SHORT",
+            "symbol": SYMBOL,
+            "price": entry,
+            "rsi": rsi,
+            "sl": sl,
+            "tp": tp
+        }
 
     return None
 
-# === ЗАПУСК ===
-print("Бот запущен...")
+def format_signal_message(info):
+    if not info:
+        return None
+    direction = "LONG" if info["type"] == "LONG" else "SHORT"
+    return (
+        f"{direction} {info['symbol']} | Цена: {info['price']:.2f} | RSI: {info['rsi']:.2f} | "
+        f"SL: {info['sl']:.2f} TP: {info['tp']:.2f}"
+    )
 
-while True:
-    try:
-        signal = check_signal()
+def main_loop():
+    logging.info("Старт цикла сигналов с несколькими инструментами...")
+    while True:
+        for symbol in SYMBOLS:
+            try:
+                data = fetch_klines(symbol, INTERVAL, LIMIT)
+                if not data or len(data) < 50:
+                    logging.warning(f"Недостаточно данных для {symbol}.")
+                    continue
 
-        if signal:
-            bot.send_message(CHAT_ID, signal)
-            print("✅ Сигнал отправлен")
-            time.sleep(1800)  # пауза 30 мин
-        else:
-            print("⏳ Нет сигнала")
-            time.sleep(300)  # проверка каждые 5 мин
-
-    except Exception as e:
-        print("❌ Ошибка:", e)
-        time.sleep(60)
+                df = parse_df(data)
+                # Привязка сигнала к конкретному символу
+                # Об
