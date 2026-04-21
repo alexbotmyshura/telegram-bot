@@ -1,14 +1,17 @@
 import time
 import requests
 import pandas as pd
+import random
 from datetime import datetime
 
-# 🔥 ВСТАВЬ СЮДА СВОИ ДАННЫЕ
+# 🔥 ВСТАВЬ СВОИ ДАННЫЕ
 BOT_TOKEN = "8789386024:AAEo78wFGwkWV6WGQLTS90p4xr8wYaakQCI"
 CHAT_ID = "421535087"
 
 SYMBOL = "SOLUSDT"
 INTERVAL = "15m"
+
+last_signal_time = 0
 
 
 def send_telegram(message):
@@ -25,12 +28,6 @@ def send_telegram(message):
         print("✅ Отправлено в Telegram")
     except Exception as e:
         print("❌ Ошибка Telegram:", e)
-
-
-def get_price():
-    url = f"https://api.binance.com/api/v3/ticker/price?symbol={SYMBOL}"
-    data = requests.get(url).json()
-    return float(data["price"])
 
 
 def get_klines():
@@ -56,15 +53,14 @@ def generate_signal():
     df["ema50"] = df["close"].ewm(span=50).mean()
 
     last = df.iloc[-1]
-    prev = df.iloc[-2]
 
     price = round(last["close"], 2)
 
     # LONG
-    if last["ema20"] > last["ema50"] and last["close"] > prev["close"]:
+    if last["ema20"] > last["ema50"]:
         entry = price
-        stop = round(price * 0.995, 2)
-        take = round(price * 1.02, 2)
+        stop = round(price * 0.996, 2)
+        take = round(price * 1.01, 2)
 
         return f"""🚀 LONG
 
@@ -73,14 +69,15 @@ def generate_signal():
 Стоп: {stop}
 Тейк: {take}
 
+EMA20 > EMA50
 ⏰ {datetime.now().strftime('%H:%M')}
 """
 
     # SHORT
-    if last["ema20"] < last["ema50"] and last["close"] < prev["close"]:
+    if last["ema20"] < last["ema50"]:
         entry = price
-        stop = round(price * 1.005, 2)
-        take = round(price * 0.98, 2)
+        stop = round(price * 1.004, 2)
+        take = round(price * 0.99, 2)
 
         return f"""🚀 SHORT
 
@@ -89,6 +86,7 @@ def generate_signal():
 Стоп: {stop}
 Тейк: {take}
 
+EMA20 < EMA50
 ⏰ {datetime.now().strftime('%H:%M')}
 """
 
@@ -96,19 +94,24 @@ def generate_signal():
 
 
 def main():
-    print("🤖 Бот запущен")
+    global last_signal_time
+
+    print("🤖 Бот 2-5 сигналов запущен")
 
     while True:
         try:
             signal = generate_signal()
+            now = time.time()
 
-            if signal:
+            # 🔥 даем сигнал не чаще чем раз в 1–3 часа
+            if signal and (now - last_signal_time > random.randint(3600, 10800)):
                 print(signal)
                 send_telegram(signal)
-                time.sleep(3600)
+                last_signal_time = now
             else:
-                print("Нет сигнала...")
-                time.sleep(300)
+                print("Нет сигнала или ждём таймер...")
+
+            time.sleep(300)  # проверка каждые 5 минут
 
         except Exception as e:
             print("Ошибка:", e)
