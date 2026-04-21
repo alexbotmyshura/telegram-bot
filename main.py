@@ -10,8 +10,8 @@ import telebot
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
 # Безопасность: токены и параметры через окружение
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")  # строка, например "123456789"
+BOT_TOKEN = os.environ.get("8789386024:AAEo78wFGwkWV6WGQLTS90p4xr8wYaakQCI")
+CHAT_ID = os.environ.get("421535087")  # строка, например "123456789"
 
 # Параметры сигнала и рисков
 SYMBOLS = [
