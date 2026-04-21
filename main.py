@@ -9,8 +9,8 @@ CHAT_ID = os.getenv("421535087")
 
 SYMBOL = "SOLUSDT"
 INTERVAL = "15m"
-CHECK_EVERY_SEC = 300  # проверка каждые 5 минут
-PAUSE_AFTER_SIGNAL_SEC = 3600  # пауза после сигнала 1 час
+CHECK_EVERY_SEC = 300
+PAUSE_AFTER_SIGNAL_SEC = 3600
 
 
 def send_telegram(message):
@@ -27,7 +27,7 @@ def send_telegram(message):
 
     try:
         r = requests.post(url, data=data, timeout=15)
-        print("Telegram status:", r.status_code, r.text)
+        print("Telegram:", r.status_code, r.text)
     except Exception as e:
         print("Ошибка отправки в Telegram:", e)
 
@@ -79,7 +79,6 @@ def calculate_indicators(df):
     df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
 
     delta = df["close"].diff()
-
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
@@ -114,16 +113,13 @@ def generate_signal():
     volume = float(last["volume"])
     prev_volume = float(prev["volume"])
 
-    # фильтр объема
-    volume_ok_long = volume > prev_volume * 1.05
-    volume_ok_short = volume > prev_volume * 1.05
+    volume_ok = volume > prev_volume * 1.05
 
-    # LONG
     if (
         ema20 > ema50 and
         rsi > 55 and
         last["close"] > prev["close"] and
-        volume_ok_long
+        volume_ok
     ):
         entry = price
         stop = round(price * 0.995, 2)
@@ -148,13 +144,62 @@ RSI14: {rsi}
 Причина: Тренд вверх + импульс + объем
 ⏰ {datetime.now().strftime('%H:%M:%S')}"""
 
-    # SHORT
     if (
         ema20 < ema50 and
         rsi < 45 and
         last["close"] < prev["close"] and
-        volume_ok_short
+        volume_ok
     ):
         entry = price
         stop = round(price * 1.005, 2)
-        take = round(price
+        take = round(price * 0.98, 2)
+        rr = round((entry - take) / (stop - entry), 2)
+
+        return f"""🚀 <b>PRO СИГНАЛ</b>
+
+{SYMBOL}
+Таймфрейм: {INTERVAL}
+Тип: <b>SHORT</b>
+
+Вход: {entry}
+Стоп: {stop}
+Тейк: {take}
+RR: ~1:{rr}
+
+EMA20: {ema20}
+EMA50: {ema50}
+RSI14: {rsi}
+
+Причина: Тренд вниз + давление + объем
+⏰ {datetime.now().strftime('%H:%M:%S')}"""
+
+    return None
+
+
+def main():
+    print("🤖 PRO бот запущен")
+
+    if not BOT_TOKEN or not CHAT_ID:
+        print("❌ Нужно задать BOT_TOKEN и CHAT_ID")
+        while True:
+            time.sleep(60)
+
+    while True:
+        try:
+            signal = generate_signal()
+
+            if signal:
+                print(signal)
+                send_telegram(signal)
+                time.sleep(PAUSE_AFTER_SIGNAL_SEC)
+            else:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Нет сигнала")
+                time.sleep(CHECK_EVERY_SEC)
+
+        except Exception as e:
+            print("❌ Ошибка в main:", e)
+            time.sleep(60)
+
+
+if __name__ == "__main__":
+    main()
