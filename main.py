@@ -21,11 +21,11 @@ def send_telegram(message):
 
 def get_data(symbol):
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={TIMEFRAME}&limit=100"
+        # ✅ альтернативный Binance endpoint (работает на Railway)
+        url = f"https://api.binance.me/api/v3/klines?symbol={symbol}&interval={TIMEFRAME}&limit=100"
         response = requests.get(url, timeout=10)
         data = response.json()
 
-        # ❗ если Binance вернул ошибку или пусто
         if not data or isinstance(data, dict):
             print(f"{symbol} — нет данных от Binance")
             return None
@@ -45,7 +45,7 @@ def get_data(symbol):
 def analyze(symbol):
     df = get_data(symbol)
 
-    # ✅ ФИКС ошибки
+    # ✅ защита от ошибки
     if df is None or df.empty or len(df) < 50:
         print(f"{symbol} — пропуск (нет данных)")
         return
@@ -70,7 +70,7 @@ def analyze(symbol):
 
     signal = None
 
-    # 🔥 ЛОГИКА (баланс сигналов)
+    # 🔥 баланс сигналов (2–5 в день)
     if ema20 > ema50 and rsi > 50:
         signal = "LONG"
         entry = price
@@ -106,7 +106,7 @@ RSI: {rsi:.2f}
     else:
         print(f"{symbol} — нет сигнала")
 
-# 🔁 ОСНОВНОЙ ЦИКЛ
+# 🔁 основной цикл
 while True:
     for symbol in SYMBOLS:
         try:
@@ -114,4 +114,4 @@ while True:
         except Exception as e:
             print("Ошибка анализа:", e)
 
-    time.sleep(60)  # проверка каждую минуту
+    time.sleep(60)
