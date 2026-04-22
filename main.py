@@ -9,29 +9,52 @@ SYMBOLS = ["SOLUSDT", "ETHUSDT"]
 TIMEFRAME = "15m"
 
 def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {
-        "chat_id": CHAT_ID,
-        "text": message
-    }
-    requests.post(url, data=data)
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        data = {
+            "chat_id": CHAT_ID,
+            "text": message
+        }
+        requests.post(url, data=data, timeout=10)
+    except Exception as e:
+        print("Ошибка отправки:", e)
 
 def get_data(symbol):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={TIMEFRAME}&limit=100"
-    data = requests.get(url).json()
-    df = pd.DataFrame(data, columns=[
-        "time","open","high","low","close","volume",
-        "ct","qav","trades","tbbav","tbqav","ignore"
-    ])
-    df["close"] = df["close"].astype(float)
-    return df
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={TIMEFRAME}&limit=100"
+        response = requests.get(url, timeout=10)
+        data = response.json()
+
+        # ❗ если Binance вернул ошибку или пусто
+        if not data or isinstance(data, dict):
+            print(f"{symbol} — нет данных от Binance")
+            return None
+
+        df = pd.DataFrame(data, columns=[
+            "time","open","high","low","close","volume",
+            "ct","qav","trades","tbbav","tbqav","ignore"
+        ])
+
+        df["close"] = df["close"].astype(float)
+        return df
+
+    except Exception as e:
+        print("Ошибка загрузки:", e)
+        return None
 
 def analyze(symbol):
     df = get_data(symbol)
 
+    # ✅ ФИКС ошибки
+    if df is None or df.empty or len(df) < 50:
+        print(f"{symbol} — пропуск (нет данных)")
+        return
+
+    # EMA
     df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
 
+    # RSI
     delta = df["close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
@@ -47,7 +70,7 @@ def analyze(symbol):
 
     signal = None
 
-    # 🔥 УПРОЩЕННАЯ ЛОГИКА (даёт 2-5 сигналов)
+    # 🔥 ЛОГИКА (баланс сигналов)
     if ema20 > ema50 and rsi > 50:
         signal = "LONG"
         entry = price
@@ -83,11 +106,12 @@ RSI: {rsi:.2f}
     else:
         print(f"{symbol} — нет сигнала")
 
-# 🔁 ЦИКЛ
+# 🔁 ОСНОВНОЙ ЦИКЛ
 while True:
     for symbol in SYMBOLS:
         try:
             analyze(symbol)
         except Exception as e:
-            print("Ошибка:", e)
+            print("Ошибка анализа:", e)
+
     time.sleep(60)  # проверка каждую минуту
