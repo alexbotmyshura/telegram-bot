@@ -6,7 +6,7 @@ TELEGRAM_TOKEN = "8789386024:AAEo78wFGwkWV6WGQLTS90p4xr8wYaakQCI"
 CHAT_ID = "421535087"
 
 SYMBOLS = ["SOLUSDT", "ETHUSDT"]
-TIMEFRAME = "15m"
+TIMEFRAME = "15"  # 15 минут
 
 def send_telegram(message):
     try:
@@ -21,21 +21,26 @@ def send_telegram(message):
 
 def get_data(symbol):
     try:
-        # ✅ альтернативный Binance endpoint (работает на Railway)
-        url = f"https://api.binance.me/api/v3/klines?symbol={symbol}&interval={TIMEFRAME}&limit=100"
-        response = requests.get(url, timeout=10)
-        data = response.json()
+        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={TIMEFRAME}&limit=100"
+        response = requests.get(url, timeout=10).json()
 
-        if not data or isinstance(data, dict):
-            print(f"{symbol} — нет данных от Binance")
+        if "result" not in response:
+            print(f"{symbol} — ошибка API")
+            return None
+
+        data = response["result"]["list"]
+
+        if not data:
+            print(f"{symbol} — нет данных")
             return None
 
         df = pd.DataFrame(data, columns=[
-            "time","open","high","low","close","volume",
-            "ct","qav","trades","tbbav","tbqav","ignore"
+            "time","open","high","low","close","volume","turnover"
         ])
 
         df["close"] = df["close"].astype(float)
+        df = df[::-1]  # переворачиваем (Bybit отдаёт наоборот)
+
         return df
 
     except Exception as e:
@@ -45,9 +50,8 @@ def get_data(symbol):
 def analyze(symbol):
     df = get_data(symbol)
 
-    # ✅ защита от ошибки
     if df is None or df.empty or len(df) < 50:
-        print(f"{symbol} — пропуск (нет данных)")
+        print(f"{symbol} — пропуск")
         return
 
     # EMA
@@ -70,7 +74,6 @@ def analyze(symbol):
 
     signal = None
 
-    # 🔥 баланс сигналов (2–5 в день)
     if ema20 > ema50 and rsi > 50:
         signal = "LONG"
         entry = price
@@ -88,7 +91,7 @@ def analyze(symbol):
 🚀 ФЬЮЧЕРС СИГНАЛ
 
 {symbol}
-Таймфрейм: {TIMEFRAME}
+Таймфрейм: 15m
 Тип: {signal}
 
 Вход: {entry:.2f}
@@ -106,7 +109,7 @@ RSI: {rsi:.2f}
     else:
         print(f"{symbol} — нет сигнала")
 
-# 🔁 основной цикл
+# 🔁 цикл
 while True:
     for symbol in SYMBOLS:
         try:
