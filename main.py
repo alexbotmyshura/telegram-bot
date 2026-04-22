@@ -1,112 +1,138 @@
-import requests
-import time
+import ccxt
 import pandas as pd
+import time
+import requests
+from datetime import datetime
 
-TELEGRAM_TOKEN = "8789386024:AAEo78wFGwkWV6WGQLTS90p4xr8wYaakQCI"
+# ====== НАСТРОЙКИ ======
+API_TOKEN = "8789386024:AAEo78wFGwkWV6WGQLTS90p4xr8wYaakQCI"
 CHAT_ID = "421535087"
 
-SYMBOLS = ["SOLUSDT", "ETHUSDT"]
+SYMBOLS = ["ETH/USDT", "SOL/USDT"]
 TIMEFRAME = "15m"
 
-def send_telegram(message):
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": message}, timeout=10)
-    except Exception as e:
-        print("Ошибка отправки:", e)
+MAX_SIGNALS_PER_DAY = 5
+COOLDOWN_MINUTES = 30
+
+# ====== ПЕРЕМЕННЫЕ ======
+last_signal = {}
+signals_today = 0
+last_reset_day = None
+last_signal_time = {}
+
+# ====== БИРЖА ======
+exchange = ccxt.binance()
+
+# ====== ФУНКЦИИ ======
+def send_telegram(text):
+    url = f"https://api.telegram.org/bot{API_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": CHAT_ID, "text": text})
 
 def get_data(symbol):
-    try:
-        # ✅ публичный прокси Binance (работает без блокировок)
-        url = f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={TIMEFRAME}&limit=100"
+    ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=100)
+    df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
+    return df
 
-        headers = {
-            "User-Agent": "Mozilla/5.0"
-        }
-
-        response = requests.get(url, headers=headers, timeout=10)
-
-        if response.status_code != 200:
-            print(f"{symbol} — ошибка HTTP")
-            return None
-
-        data = response.json()
-
-        if not data:
-            print(f"{symbol} — пусто")
-            return None
-
-        df = pd.DataFrame(data, columns=[
-            "time","open","high","low","close","volume",
-            "ct","qav","trades","tbbav","tbqav","ignore"
-        ])
-
-        df["close"] = df["close"].astype(float)
-
-        return df
-
-    except Exception as e:
-        print("Ошибка загрузки:", e)
-        return None
-
-def analyze(symbol):
-    df = get_data(symbol)
-
-    if df is None or len(df) < 50:
-        print(f"{symbol} — пропуск")
-        return
-
-    df["ema20"] = df["close"].ewm(span=20).mean()
-    df["ema50"] = df["close"].ewm(span=50).mean()
+def indicators(df):
+    df["EMA20"] = df["close"].ewm(span=20).mean()
+    df["EMA50"] = df["close"].ewm(span=50).mean()
+    df["EMA200"] = df["close"].ewm(span=200).mean()
 
     delta = df["close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(14).mean()
     loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
     rs = gain / loss
-    df["rsi"] = 100 - (100 / (1 + rs))
+    df["RSI"] = 100 - (100 / (1 + rs))
+
+    return df
+
+def check_signal(symbol):
+    global last_signal, signals_today, last_reset_day, last_signal_time
+
+    df = get_data(symbol)
+    df = indicators(df)
 
     last = df.iloc[-1]
 
     price = last["close"]
-    ema20 = last["ema20"]
-    ema50 = last["ema50"]
-    rsi = last["rsi"]
+    ema20 = last["EMA20"]
+    ema50 = last["EMA50"]
+    ema200 = last["EMA200"]
+    rsi = last["RSI"]
+
+    now = datetime.now()
+    today = now.date()
+
+    # сброс дня
+    if last_reset_day != today:
+        signals_today = 0
+        last_reset_day = today
+
+    # лимит сигналов
+    if signals_today >= MAX_SIGNALS_PER_DAY:
+        return
+
+    # кулдаун
+    if symbol in last_signal_time:
+        diff = (now - last_signal_time[symbol]).total_seconds() / 60
+        if diff < COOLDOWN_MINUTES:
+            return
 
     signal = None
 
-    if ema20 > ema50 and rsi > 50:
+    # ===== LONG =====
+    if ema20 > ema50 > ema200 and rsi > 55:
+        entry = round(price, 2)
+        stop = round(price * 0.995, 2)
+        take = round(price * 1.015, 2)
         signal = "LONG"
-        entry = price
-        stop = price * 0.995
-        take = price * 1.015
 
-    elif ema20 < ema50 and rsi < 50:
+    # ===== SHORT =====
+    elif ema20 < ema50 < ema200 and rsi < 45:
+        entry = round(price, 2)
+        stop = round(price * 1.005, 2)
+        take = round(price * 0.985, 2)
         signal = "SHORT"
-        entry = price
-        stop = price * 1.005
-        take = price * 0.985
 
     if signal:
-        message = f"""
-🚀 ФЬЮЧЕРС СИГНАЛ
+        signal_key = f"{symbol}_{signal}_{entry}"
 
-{symbol}
-Таймфрейм: 15m
+        # защита от дубля
+        if symbol in last_signal and last_signal[symbol] == signal_key:
+            return
+
+        message = f"""🚀 ФЬЮЧЕРС СИГНАЛ
+
+{symbol.replace("/", "")}
+Таймфрейм: {TIMEFRAME}
 Тип: {signal}
 
-Вход: {entry:.2f}
-Стоп: {stop:.2f}
-Тейк: {take:.2f}
+Вход: {entry}
+Стоп: {stop}
+Тейк: {take}
 
 RR: ~1:3
+
+EMA20: {round(ema20,2)}
+EMA50: {round(ema50,2)}
+EMA200: {round(ema200,2)}
+RSI14: {round(rsi,2)}
 """
+
         send_telegram(message)
-        print(f"{symbol} сигнал отправлен")
-    else:
-        print(f"{symbol} — нет сигнала")
 
+        last_signal[symbol] = signal_key
+        last_signal_time[symbol] = now
+        signals_today += 1
+
+# ====== ЦИКЛ ======
 while True:
-    for symbol in SYMBOLS:
-        analyze(symbol)
+    try:
+        for symbol in SYMBOLS:
+            check_signal(symbol)
 
-    time.sleep(60)
+        time.sleep(60)  # проверка раз в минуту
+
+    except Exception as e:
+        print("Ошибка:", e)
+        time.sleep(60)
