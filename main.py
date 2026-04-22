@@ -2,11 +2,12 @@ import ccxt
 import pandas as pd
 import time
 import requests
+import os
 from datetime import datetime
 
 # ====== НАСТРОЙКИ ======
-API_TOKEN = "8789386024:AAEo78wFGwkWV6WGQLTS90p4xr8wYaakQCI"
-CHAT_ID = "421535087"
+API_TOKEN = os.getenv("8789386024:AAEo78wFGwkWV6WGQLTS90p4xr8wYaakQCI")
+CHAT_ID = os.getenv("421535087")
 
 SYMBOLS = ["ETH/USDT", "SOL/USDT"]
 TIMEFRAME = "15m"
@@ -20,14 +21,17 @@ signals_today = 0
 last_reset_day = None
 last_signal_time = {}
 
-# ====== БИРЖА ======
 exchange = ccxt.binance()
 
-# ====== ФУНКЦИИ ======
+# ====== TELEGRAM ======
 def send_telegram(text):
-    url = f"https://api.telegram.org/bot{API_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": CHAT_ID, "text": text})
+    try:
+        url = f"https://api.telegram.org/bot{API_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": text}, timeout=10)
+    except Exception as e:
+        print("Ошибка отправки:", e)
 
+# ====== ДАННЫЕ ======
 def get_data(symbol):
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe=TIMEFRAME, limit=100)
     df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","volume"])
@@ -46,62 +50,64 @@ def indicators(df):
 
     return df
 
+# ====== ЛОГИКА ======
 def check_signal(symbol):
     global last_signal, signals_today, last_reset_day, last_signal_time
 
-    df = get_data(symbol)
-    df = indicators(df)
+    try:
+        df = get_data(symbol)
+        df = indicators(df)
 
-    last = df.iloc[-1]
+        last = df.iloc[-1]
 
-    price = last["close"]
-    ema20 = last["EMA20"]
-    ema50 = last["EMA50"]
-    ema200 = last["EMA200"]
-    rsi = last["RSI"]
+        price = last["close"]
+        ema20 = last["EMA20"]
+        ema50 = last["EMA50"]
+        ema200 = last["EMA200"]
+        rsi = last["RSI"]
 
-    now = datetime.now()
-    today = now.date()
+        now = datetime.now()
+        today = now.date()
 
-    # сброс дня
-    if last_reset_day != today:
-        signals_today = 0
-        last_reset_day = today
+        # сброс дня
+        if last_reset_day != today:
+            signals_today = 0
+            last_reset_day = today
 
-    # лимит сигналов
-    if signals_today >= MAX_SIGNALS_PER_DAY:
-        return
-
-    # кулдаун
-    if symbol in last_signal_time:
-        diff = (now - last_signal_time[symbol]).total_seconds() / 60
-        if diff < COOLDOWN_MINUTES:
+        # лимит
+        if signals_today >= MAX_SIGNALS_PER_DAY:
             return
 
-    signal = None
+        # кулдаун
+        if symbol in last_signal_time:
+            diff = (now - last_signal_time[symbol]).total_seconds() / 60
+            if diff < COOLDOWN_MINUTES:
+                return
 
-    # ===== LONG =====
-    if ema20 > ema50 > ema200 and rsi > 55:
-        entry = round(price, 2)
-        stop = round(price * 0.995, 2)
-        take = round(price * 1.015, 2)
-        signal = "LONG"
+        signal = None
 
-    # ===== SHORT =====
-    elif ema20 < ema50 < ema200 and rsi < 45:
-        entry = round(price, 2)
-        stop = round(price * 1.005, 2)
-        take = round(price * 0.985, 2)
-        signal = "SHORT"
+        # LONG
+        if ema20 > ema50 > ema200 and rsi > 55:
+            entry = round(price, 2)
+            stop = round(price * 0.995, 2)
+            take = round(price * 1.015, 2)
+            signal = "LONG"
 
-    if signal:
-        signal_key = f"{symbol}_{signal}_{entry}"
+        # SHORT
+        elif ema20 < ema50 < ema200 and rsi < 45:
+            entry = round(price, 2)
+            stop = round(price * 1.005, 2)
+            take = round(price * 0.985, 2)
+            signal = "SHORT"
 
-        # защита от дубля
-        if symbol in last_signal and last_signal[symbol] == signal_key:
-            return
+        if signal:
+            signal_key = f"{symbol}_{signal}_{entry}"
 
-        message = f"""🚀 ФЬЮЧЕРС СИГНАЛ
+            # анти-дубль
+            if symbol in last_signal and last_signal[symbol] == signal_key:
+                return
+
+            message = f"""🚀 ФЬЮЧЕРС СИГНАЛ
 
 {symbol.replace("/", "")}
 Таймфрейм: {TIMEFRAME}
@@ -112,27 +118,27 @@ def check_signal(symbol):
 Тейк: {take}
 
 RR: ~1:3
-
-EMA20: {round(ema20,2)}
-EMA50: {round(ema50,2)}
-EMA200: {round(ema200,2)}
-RSI14: {round(rsi,2)}
 """
 
-        send_telegram(message)
+            send_telegram(message)
 
-        last_signal[symbol] = signal_key
-        last_signal_time[symbol] = now
-        signals_today += 1
+            print("Отправлен сигнал:", symbol, signal)
 
-# ====== ЦИКЛ ======
-while True:
-    try:
-        for symbol in SYMBOLS:
-            check_signal(symbol)
-
-        time.sleep(60)  # проверка раз в минуту
+            last_signal[symbol] = signal_key
+            last_signal_time[symbol] = now
+            signals_today += 1
 
     except Exception as e:
-        print("Ошибка:", e)
-        time.sleep(60)
+        print("Ошибка сигнала:", e)
+
+# ====== СТАРТ ======
+print("Бот запущен...")
+
+if not API_TOKEN or not CHAT_ID:
+    print("❌ Добавь API_TOKEN и CHAT_ID в Railway Variables")
+
+while True:
+    for symbol in SYMBOLS:
+        check_signal(symbol)
+
+    time.sleep(60)
