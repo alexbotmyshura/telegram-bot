@@ -6,7 +6,7 @@ TELEGRAM_TOKEN = "8789386024:AAEo78wFGwkWV6WGQLTS90p4xr8wYaakQCI"
 CHAT_ID = "421535087"
 
 SYMBOLS = ["SOLUSDT", "ETHUSDT"]
-TIMEFRAME = "15"
+TIMEFRAME = "15m"
 
 def send_telegram(message):
     try:
@@ -17,37 +17,31 @@ def send_telegram(message):
 
 def get_data(symbol):
     try:
-        url = f"https://api.bybit.com/v5/market/kline?category=linear&symbol={symbol}&interval={TIMEFRAME}&limit=100"
-        
-        response = requests.get(url, timeout=10)
+        # ✅ публичный прокси Binance (работает без блокировок)
+        url = f"https://data-api.binance.vision/api/v3/klines?symbol={symbol}&interval={TIMEFRAME}&limit=100"
 
-        # ✅ проверка ответа
+        headers = {
+            "User-Agent": "Mozilla/5.0"
+        }
+
+        response = requests.get(url, headers=headers, timeout=10)
+
         if response.status_code != 200:
             print(f"{symbol} — ошибка HTTP")
             return None
 
-        try:
-            data = response.json()
-        except:
-            print(f"{symbol} — не JSON ответ")
-            return None
+        data = response.json()
 
-        if "result" not in data:
-            print(f"{symbol} — ошибка API")
-            return None
-
-        candles = data["result"]["list"]
-
-        if not candles:
+        if not data:
             print(f"{symbol} — пусто")
             return None
 
-        df = pd.DataFrame(candles, columns=[
-            "time","open","high","low","close","volume","turnover"
+        df = pd.DataFrame(data, columns=[
+            "time","open","high","low","close","volume",
+            "ct","qav","trades","tbbav","tbqav","ignore"
         ])
 
         df["close"] = df["close"].astype(float)
-        df = df[::-1]
 
         return df
 
@@ -114,4 +108,5 @@ RR: ~1:3
 while True:
     for symbol in SYMBOLS:
         analyze(symbol)
+
     time.sleep(60)
